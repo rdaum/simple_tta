@@ -1,0 +1,48 @@
+CAPI=2:
+name: "::simple_tta:0.1"
+description: "Simple TTA processor"
+filesets:
+  files_tta:
+    files:
+      - rtl/tta.sv
+      - rtl/alu_unit.sv
+      - rtl/bus_if.sv {is_include_file:true}
+      - rtl/common.vh
+      - rtl/register_unit.sv
+      - rtl/sequencer.sv
+      - rtl/cmod_a35t_top.sv
+      - rtl/decoder.sv
+      - rtl/execute.sv
+      - rtl/blkram.sv
+    file_type: systemVerilogSource
+
+  files_cmod_constraints:
+    files:
+    - rtl/cmod-a35t-constraints.xdc
+    file_type: xdc
+
+targets:
+  synth:
+    default_tool: vivado
+    filesets:
+    - files_tta
+    - files_cmod_constraints
+    toplevel: cmod_a35t_top
+    tools:
+      vivado:
+        part: "xc7a35tcpg236-1"  # CMod A35t
+  lint:
+    default_tool: verilator
+    filesets: [files_retrov]
+    tools:
+      verilator:
+        mode: lint-only
+    toplevel: top
+  # Unfortunately this tries to link
+  verilator_sim:
+    default_tool: verilator
+    filesets: [files_tta]
+    tools:
+      verilator:
+        verilator_options: [--trace -Wno-fatal -cc -O3]
+    toplevel: top
