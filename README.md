@@ -6,10 +6,10 @@ Architecture](https://en.wikipedia.org/wiki/Transport_triggered_architecture).
 
 ### What's it for?
 
-I built it just to play with the concept, learn some, and to
+I built it just to play with the concept, learn some HDL stuff, and to
 potentially use it as the basis for domain specific coprocessors for
 other hobby projects of mine.  In particular I'd like to use it for
-support for language interpreters for my FPGA projects.
+support for language interpreters for other hobby FPGA projects.
 
 ### What can it do?
 
@@ -57,4 +57,5 @@ used, and schedule accordingly.
   
 ### But this sucks, because <XXXX>?
 
-  * Well I'm not as smart as you! Contributions welcome.
+  * Well I'm not as smart as you! This is a toy.
+  * But ... Contributions welcome.
