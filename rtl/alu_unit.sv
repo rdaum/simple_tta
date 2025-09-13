@@ -16,22 +16,23 @@ module alu_unit(
             data_o <= 32'b0;
         end else if (sel_i) begin
             case (oper_i)
-                ALU_NOP: data_o <= 31'b0;
+                ALU_NOP: data_o <= 32'b0;
                 ALU_ADD: data_o <= a_data_i+b_data_i;
                 ALU_SUB: data_o <= a_data_i-b_data_i;
                 ALU_DIV: data_o <= a_data_i/b_data_i;
                 ALU_MUL: data_o <= a_data_i*b_data_i;
                 ALU_MOD: data_o <= a_data_i%b_data_i;
-                ALU_EQL: data_o <= a_data_i == b_data_i;
-                ALU_SL: data_o <= a_data_i << b_data_i;
-                ALU_SR: data_o <= a_data_i >> b_data_i;
-                ALU_SRA: data_o <= a_data_i >>> b_data_i;
+                ALU_EQL: data_o <= {31'b0, (a_data_i == b_data_i)};
+                ALU_SL: data_o <= a_data_i << b_data_i[4:0];
+                ALU_SR: data_o <= a_data_i >> b_data_i[4:0];
+                ALU_SRA: data_o <= a_data_i >>> b_data_i[4:0];
                 ALU_NOT: data_o <= ~a_data_i; // what about not b?
-                ALU_AND: data_o <= a_data_i && b_data_i;
-                ALU_OR: data_o <= a_data_i || b_data_i;
-                ALU_XOR: data_o <= ^ a_data_i; // what about ^ b;?
-                ALU_GT: data_o <= a_data_i > b_data_i;
-                ALU_LT: data_o <= a_data_i < b_data_i;
+                ALU_AND: data_o <= a_data_i & b_data_i;
+                ALU_OR: data_o <= a_data_i | b_data_i;
+                ALU_XOR: data_o <= a_data_i ^ b_data_i; // what about ^ b;?
+                ALU_GT: data_o <= {31'b0, (a_data_i > b_data_i)};
+                ALU_LT: data_o <= {31'b0, (a_data_i < b_data_i)};
+                default: data_o <= 32'b0;
             endcase
         end
     end

@@ -1,0 +1,62 @@
+use marlin::{
+    verilator::{VerilatorRuntime, VerilatorRuntimeOptions},
+    verilog::prelude::*,
+};
+use eyre::Result;
+use camino::Utf8Path;
+
+// Define a minimal test module first
+#[verilog(src = "minimal.sv", name = "minimal")]
+struct Minimal;
+
+fn main() -> Result<()> {
+    // Initialize logging
+    env_logger::init();
+    println!("TTA Rust Simulator initializing...");
+    
+    // Create the runtime for our TTA simulation
+    let include_paths = [Utf8Path::new("rtl")];
+    let src_files = [Utf8Path::new("rtl/tta.sv")];
+    
+    let runtime = VerilatorRuntime::new(
+        Utf8Path::new("artifacts"),
+        &src_files,
+        &include_paths,
+        [],
+        VerilatorRuntimeOptions::default_logging(),
+    ).map_err(|e| eyre::eyre!("Failed to create runtime: {}", e))?;
+    
+    println!("Verilator runtime created successfully!");
+    
+    // Create a model instance
+    let mut test_module = runtime.create_model_simple::<Minimal>()
+        .map_err(|e| eyre::eyre!("Failed to create model: {}", e))?;
+    
+    println!("Created Minimal model!");
+    
+    // Test basic functionality
+    test_module.a = 0;
+    test_module.eval();
+    
+    println!("a=0 -> b={}", test_module.b);
+    
+    test_module.a = 1;
+    test_module.eval();
+    
+    println!("a=1 -> b={}", test_module.b);
+    
+    println!("Basic Marlin simulation working!");
+    
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    
+    #[tokio::test]
+    async fn test_basic_setup() {
+        println!("Basic test running");
+        assert!(true);
+    }
+}

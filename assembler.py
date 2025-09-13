@@ -108,11 +108,11 @@ def main():
     mem = open("bootmem.mem", "w")
     chks = chunks(prgm, 4)
     for x in chks:
-        mem.write(string.join([i.hex() for i in x]))
+        mem.write(" ".join([i.hex() for i in x]))
         mem.write("\n")
     mem.close()
 
-    print(string.join([i.asm() for i in prgm], "\n"))
+    print("\n".join([i.asm() for i in prgm]))
 
 if __name__ == "__main__":
     main()

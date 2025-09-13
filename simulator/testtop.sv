@@ -27,8 +27,8 @@ module testtop(
         cycles_executed_o <= cycles_executed_o + 1;
     end
 
-    bus_if data_bus;
-    bus_if instr_bus;
+    bus_if data_bus();
+    bus_if instr_bus();
     always_comb begin
         data_bus.read_data = data_data_read_i;
         data_bus.ready = data_ready_i;

@@ -13,7 +13,7 @@ module simtop (
     output wire uart_txd_o
 );
 
-    bus_if bootmem_bus;
+    bus_if bootmem_bus();
     blkram#(
         .INIT_FILE("bootmem.mem"),
         .RAM_DEPTH(12288)
@@ -24,7 +24,7 @@ module simtop (
         .data_bus(bootmem_bus.slave)
     );
 
-    bus_if data_bus;
+    bus_if data_bus();
     always_comb begin
         data_bus.read_data = sram_data_i;
         data_bus.ready = sram_ready_i;

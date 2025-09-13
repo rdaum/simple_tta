@@ -22,8 +22,7 @@ and data buses, and 8 integer ALUs, and simple instructions for:
   * Setting and reading the program counter.
   
 The instruction set is very simple and is best understood by reading
-the primitive "assembler" used by the unit tests in
-assembler.cc/assembler.h
+the assembler implementation in tests/assembler.rs
 
   * All instructions have a source unit (ALU, register, memory, or
     program counter), and a destination unit (same).
@@ -45,15 +44,14 @@ used, and schedule accordingly.
 
 ### Building, running
 
-  * The simulator/ cmake target "tta_test" will run a few unit tests
-    via verilator with some instructions.
-  * The simulator/ cmake target "tta_sim" will start up a simple
-    verilator simulator and load a rom file in "bootmem.mem" and
-    execute it.
-  * A simple fusesoc core file is present, and if you have a
-    bootmem.mem ROM file present, will synthesize in Vivado for the
-    CMod A35t board but I have no actually used it for anything yet so
-    YMMV.
+The project now uses Rust with the Marlin library for simulation:
+
+  * `cargo test` runs the full test suite including integration tests
+    and property-based tests
+  * `cargo run` starts a basic simulator
+  * The old C++/cmake simulator is still present in simulator/ but no
+    longer maintained
+  * A simple fusesoc core file is present for FPGA synthesis
   
 ### But this sucks, because <XXXX>?
 

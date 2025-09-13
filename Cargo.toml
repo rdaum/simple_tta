@@ -1,0 +1,22 @@
+[package]
+name = "tta-sim"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "tta_sim"
+path = "src/lib.rs"
+
+[[bin]]
+name = "tta-sim"
+path = "src/main.rs"
+
+[dependencies]
+marlin = { version = "0.7.2", features = ["verilog"] }
+tokio = { version = "1.0", features = ["full"] }
+eyre = "0.6"
+camino = "1.1"
+env_logger = "0.10"
+
+[dev-dependencies]
+proptest = "1.4"
