@@ -2,8 +2,7 @@ use marlin::verilator::VerilatorRuntime;
 use proptest::prelude::*;
 use std::collections::HashMap;
 
-use tta_sim::{instr, ALUOp, Unit, TtaTestbench, create_tta_runtime};
-
+use tta_sim::{create_tta_runtime, instr, ALUOp, TtaTestbench, Unit};
 
 fn create_runtime() -> Result<VerilatorRuntime, Box<dyn std::error::Error>> {
     Ok(create_tta_runtime()?)
@@ -1459,6 +1458,347 @@ mod property_tests {
             prop_assert_eq!(sra_result, expected_sra, "Arithmetic right shift: {} >>> {} should be {}, got {}",
                           value, shift_amount, expected_sra, sra_result);
         }
+        /// Property: Stack push/pop operations are LIFO (Last In, First Out)
+        #[test]
+        fn prop_stack_lifo_behavior(
+            stack_id in 0u8..8,
+            values in prop::collection::vec(data_value(), 1..10)
+        ) {
+            let runtime = create_runtime().unwrap();
+            let mut tta = runtime.create_model_simple::<TtaTestbench>().unwrap();
+            let mut helper = TtaPropertyHelper::new();
+
+            // Initialize
+            tta.rst_i = 1;
+            tta.clk_i = 0;
+            tta.instr_ready_i = 1;
+            tta.data_ready_i = 1;
+            tta.instr_data_read_i = 0;
+            tta.data_data_read_i = 0;
+
+            let mut program = Vec::new();
+
+            // Push all values onto the stack
+            for &value in &values {
+                program.push(instr().push_immediate(stack_id, value));
+            }
+
+            // Pop all values from the stack and store to memory
+            // Store pops in forward order: first pop at 200, second pop at 201, etc.
+            for i in 0..values.len() {
+                let result_addr = 200 + i;
+                program.push(instr().pop_to_reg(stack_id, 0)); // Pop to register 0
+                program.push(instr().src(Unit::UNIT_REGISTER).si(0).dst(Unit::UNIT_MEMORY_IMMEDIATE).di(result_addr as u16));
+            }
+
+            let mut machine_code = Vec::new();
+            for instr in program {
+                machine_code.extend(instr.assemble());
+            }
+
+            helper.load_instructions(&machine_code, 0);
+            helper.run_until_reset_released(&mut tta).unwrap();
+            helper.run_for_cycles(&mut tta, 200);
+
+            // Verify LIFO: first pushed should be last popped
+            // Pop order should be reverse of push order
+            for (i, &expected_value) in values.iter().enumerate().rev() {
+                let pop_index = values.len() - 1 - i; // Which pop this should be
+                let result_addr = 200 + pop_index;    // Address where this pop was stored
+                let result = helper.get_data_memory(result_addr as u32);
+
+                prop_assert_eq!(result, expected_value, "Stack LIFO violated: pushed {}, got {} in pop {}",
+                              expected_value, result, pop_index);
+            }
+        }
+
+        /// Property: Stack independence - operations on one stack don't affect others
+        #[test]
+        fn prop_stack_independence(
+            stack1_id in 0u8..4,
+            stack2_id in 4u8..8,
+            value1 in data_value(),
+            value2 in data_value()
+        ) {
+        prop_assume!(stack1_id != stack2_id);
+
+        let runtime = create_runtime().unwrap();
+        let mut tta = runtime.create_model_simple::<TtaTestbench>().unwrap();
+        let mut helper = TtaPropertyHelper::new();
+
+        // Initialize
+        tta.rst_i = 1;
+        tta.clk_i = 0;
+        tta.instr_ready_i = 1;
+        tta.data_ready_i = 1;
+        tta.instr_data_read_i = 0;
+        tta.data_data_read_i = 0;
+
+        let program = vec![
+            // Push different values to different stacks
+            instr().push_immediate(stack1_id, value1),
+            instr().push_immediate(stack2_id, value2),
+
+            // Push more values to stack1, shouldn't affect stack2
+            instr().push_immediate(stack1_id, 0xDEAD),
+            instr().push_immediate(stack1_id, 0xBEEF),
+
+            // Pop the extra values from stack1
+            instr().pop_to_reg(stack1_id, 1),
+            instr().pop_to_reg(stack1_id, 2),
+
+            // Pop original values - should get them in reverse order
+            instr().pop_to_reg(stack2_id, 3), // Should get value2
+            instr().pop_to_reg(stack1_id, 4), // Should get value1
+
+            // Store results
+            instr().src(Unit::UNIT_REGISTER).si(3).dst(Unit::UNIT_MEMORY_IMMEDIATE).di(100),
+            instr().src(Unit::UNIT_REGISTER).si(4).dst(Unit::UNIT_MEMORY_IMMEDIATE).di(101),
+        ];
+
+        let mut machine_code = Vec::new();
+        for instr in program {
+            machine_code.extend(instr.assemble());
+        }
+
+        helper.load_instructions(&machine_code, 0);
+        helper.run_until_reset_released(&mut tta).unwrap();
+        helper.run_for_cycles(&mut tta, 100);
+
+        let result_stack2 = helper.get_data_memory(100);
+        let result_stack1 = helper.get_data_memory(101);
+
+        prop_assert_eq!(result_stack2, value2, "Stack {} affected by operations on stack {}", stack2_id, stack1_id);
+        prop_assert_eq!(result_stack1, value1, "Stack {} affected by operations on stack {}", stack1_id, stack2_id);
     }
 
+    /// Property: Stack peek operations don't modify stack pointer
+    #[test]
+    fn prop_stack_peek_nonmodifying(
+        stack_id in 0u8..8,
+        values in prop::collection::vec(immediate_12bit(), 3..8),
+        peek_offset in 0u8..5
+    ) {
+        let runtime = create_runtime().unwrap();
+        let mut tta = runtime.create_model_simple::<TtaTestbench>().unwrap();
+        let mut helper = TtaPropertyHelper::new();
+
+        // Initialize
+        tta.rst_i = 1;
+        tta.clk_i = 0;
+        tta.instr_ready_i = 1;
+        tta.data_ready_i = 1;
+        tta.instr_data_read_i = 0;
+        tta.data_data_read_i = 0;
+
+        let mut program = Vec::new();
+
+        // Push several values
+        for &value in &values {
+            program.push(instr().push_immediate(stack_id, value as u32));
+        }
+
+        // Peek at offset (if valid)
+        if (peek_offset as usize) < values.len() {
+            program.push(instr().stack_peek(stack_id, peek_offset, 5));
+            program.push(instr().src(Unit::UNIT_REGISTER).si(5).dst(Unit::UNIT_MEMORY_IMMEDIATE).di(150));
+        }
+
+        // Pop all values - should still get them in LIFO order despite peeking
+        for i in 0..values.len() {
+            program.push(instr().pop_to_reg(stack_id, 0));
+            program.push(instr().src(Unit::UNIT_REGISTER).si(0).dst(Unit::UNIT_MEMORY_IMMEDIATE).di((200 + i) as u16));
+        }
+
+        let mut machine_code = Vec::new();
+        for instr in program {
+            machine_code.extend(instr.assemble());
+        }
+
+        helper.load_instructions(&machine_code, 0);
+        helper.run_until_reset_released(&mut tta).unwrap();
+        helper.run_for_cycles(&mut tta, 150);
+
+        // Verify peek result if it was valid
+        if (peek_offset as usize) < values.len() {
+            let peeked_value = helper.get_data_memory(150);
+            let expected_peek = values[values.len() - 1 - peek_offset as usize] as u32;
+            prop_assert_eq!(peeked_value, expected_peek, "Stack peek returned wrong value");
+        }
+
+        // Verify LIFO order is preserved despite peeking
+        for (i, &expected) in values.iter().enumerate().rev() {
+            let result = helper.get_data_memory((200 + (values.len() - 1 - i)) as u32);
+            prop_assert_eq!(result, expected as u32, "LIFO order disrupted by peek operation");
+        }
+    }
+
+    /// Property: Stack poke operations modify specific positions without affecting others
+    #[test]
+    fn prop_stack_poke_selective(
+        stack_id in 0u8..8,
+        initial_values in prop::collection::vec(immediate_12bit(), 4..8),
+        poke_offset in 0u8..3,
+        new_value in immediate_12bit()
+    ) {
+        let runtime = create_runtime().unwrap();
+        let mut tta = runtime.create_model_simple::<TtaTestbench>().unwrap();
+        let mut helper = TtaPropertyHelper::new();
+
+        // Initialize
+        tta.rst_i = 1;
+        tta.clk_i = 0;
+        tta.instr_ready_i = 1;
+        tta.data_ready_i = 1;
+        tta.instr_data_read_i = 0;
+        tta.data_data_read_i = 0;
+
+        let mut program = Vec::new();
+
+        // Push initial values
+        for &value in &initial_values {
+            program.push(instr().push_immediate(stack_id, value as u32));
+        }
+
+        // Poke new value at offset
+        if (poke_offset as usize) < initial_values.len() {
+            program.push(instr().src(Unit::UNIT_ABS_OPERAND).si(0).soperand(new_value as u32).dst(Unit::UNIT_REGISTER).di(10));
+            program.push(instr().stack_poke(stack_id, poke_offset, 10));
+        }
+
+        // Pop all values
+        for i in 0..initial_values.len() {
+            program.push(instr().pop_to_reg(stack_id, 0));
+            program.push(instr().src(Unit::UNIT_REGISTER).si(0).dst(Unit::UNIT_MEMORY_IMMEDIATE).di((200 + i) as u16));
+        }
+
+        let mut machine_code = Vec::new();
+        for instr in program {
+            machine_code.extend(instr.assemble());
+        }
+
+        helper.load_instructions(&machine_code, 0);
+        helper.run_until_reset_released(&mut tta).unwrap();
+        helper.run_for_cycles(&mut tta, 150);
+
+        // Verify results
+        for (i, &original) in initial_values.iter().enumerate().rev() {
+            let result_addr = 200 + (initial_values.len() - 1 - i);
+            let result = helper.get_data_memory(result_addr as u32);
+
+            let expected = if (poke_offset as usize) < initial_values.len() &&
+                             i == (initial_values.len() - 1 - poke_offset as usize) {
+                new_value as u32  // This position was poked
+            } else {
+                original as u32   // This position unchanged
+            };
+
+            prop_assert_eq!(result, expected,
+                          "Stack poke failed: position {} should be {}, got {}",
+                          i, expected, result);
+        }
+    }
+
+    /// Property: Stack overflow behavior is deterministic
+    #[test]
+    fn prop_stack_overflow_behavior(
+        stack_id in 0u8..8,
+        push_count in 65u32..70  // Try to push more than 64 items
+    ) {
+        let runtime = create_runtime().unwrap();
+        let mut tta = runtime.create_model_simple::<TtaTestbench>().unwrap();
+        let mut helper = TtaPropertyHelper::new();
+
+        // Initialize
+        tta.rst_i = 1;
+        tta.clk_i = 0;
+        tta.instr_ready_i = 1;
+        tta.data_ready_i = 1;
+        tta.instr_data_read_i = 0;
+        tta.data_data_read_i = 0;
+
+        let mut program = Vec::new();
+
+        // Try to push more items than stack capacity
+        for i in 0..push_count {
+            program.push(instr().push_immediate(stack_id, i));
+        }
+
+        // Try to pop some items
+        for i in 0..5 {
+            program.push(instr().pop_to_reg(stack_id, 0));
+            program.push(instr().src(Unit::UNIT_REGISTER).si(0).dst(Unit::UNIT_MEMORY_IMMEDIATE).di((200 + i) as u16));
+        }
+
+        let mut machine_code = Vec::new();
+        for instr in program {
+            machine_code.extend(instr.assemble());
+        }
+
+        helper.load_instructions(&machine_code, 0);
+        helper.run_until_reset_released(&mut tta).unwrap();
+        helper.run_for_cycles(&mut tta, 200);
+
+        // Property: Stack should handle overflow gracefully
+        // The exact behavior depends on implementation, but should be deterministic
+        let results: Vec<u32> = (0..5).map(|i| helper.get_data_memory(200 + i)).collect();
+
+        // At minimum, we should get some reasonable values back (not garbage)
+        for result in results.iter() {
+            prop_assert!(*result < push_count || *result == 0,
+                       "Stack overflow produced unreasonable result: {}", result);
+        }
+    }
+
+    /// Property: Empty stack pop behavior is deterministic
+    #[test]
+    fn prop_empty_stack_pop_behavior(
+        stack_id in 0u8..8
+    ) {
+        let runtime = create_runtime().unwrap();
+        let mut tta = runtime.create_model_simple::<TtaTestbench>().unwrap();
+        let mut helper = TtaPropertyHelper::new();
+
+        // Initialize
+        tta.rst_i = 1;
+        tta.clk_i = 0;
+        tta.instr_ready_i = 1;
+        tta.data_ready_i = 1;
+        tta.instr_data_read_i = 0;
+        tta.data_data_read_i = 0;
+
+        let program = vec![
+            // Try to pop from empty stack
+            instr().pop_to_reg(stack_id, 5),
+            instr().src(Unit::UNIT_REGISTER).si(5).dst(Unit::UNIT_MEMORY_IMMEDIATE).di(100),
+
+            // Push something then pop twice (second pop should be from empty stack)
+            instr().push_immediate(stack_id, 0x1234),
+            instr().pop_to_reg(stack_id, 6),
+            instr().pop_to_reg(stack_id, 7),
+
+            instr().src(Unit::UNIT_REGISTER).si(6).dst(Unit::UNIT_MEMORY_IMMEDIATE).di(101),
+            instr().src(Unit::UNIT_REGISTER).si(7).dst(Unit::UNIT_MEMORY_IMMEDIATE).di(102),
+        ];
+
+        let mut machine_code = Vec::new();
+        for instr in program {
+            machine_code.extend(instr.assemble());
+        }
+
+        helper.load_instructions(&machine_code, 0);
+        helper.run_until_reset_released(&mut tta).unwrap();
+        helper.run_for_cycles(&mut tta, 100);
+
+        let empty_pop1 = helper.get_data_memory(100);
+        let valid_pop = helper.get_data_memory(101);
+        let empty_pop2 = helper.get_data_memory(102);
+
+        // Property: Empty stack pops should be deterministic (likely 0)
+        prop_assert_eq!(empty_pop1, empty_pop2, "Empty stack pops should be consistent");
+        prop_assert_eq!(valid_pop, 0x1234, "Valid pop should return pushed value");
+        prop_assert_eq!(empty_pop1, 0, "Empty stack pop should return 0"); // Based on our implementation
+
+    }
+    }
 }

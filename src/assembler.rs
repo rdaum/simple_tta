@@ -166,6 +166,57 @@ impl Instr {
 
         result
     }
+
+    // Stack operation helpers
+    pub fn push_reg(mut self, stack_id: u8, src_reg: u16) -> Self {
+        assert!(stack_id < 8, "Stack ID must be 0-7");
+        self.src_unit = Unit::UNIT_REGISTER;
+        self.si = src_reg;
+        self.dst_unit = Unit::UNIT_STACK_PUSH_POP;
+        self.di = stack_id as u16;
+        self
+    }
+
+    pub fn pop_to_reg(mut self, stack_id: u8, dst_reg: u16) -> Self {
+        assert!(stack_id < 8, "Stack ID must be 0-7");
+        self.src_unit = Unit::UNIT_STACK_PUSH_POP;
+        self.si = stack_id as u16;
+        self.dst_unit = Unit::UNIT_REGISTER;
+        self.di = dst_reg;
+        self
+    }
+
+    pub fn push_immediate(mut self, stack_id: u8, value: u32) -> Self {
+        assert!(stack_id < 8, "Stack ID must be 0-7");
+        self.src_unit = Unit::UNIT_ABS_OPERAND;
+        self.si = 0;
+        self.soperand = Some(value);
+        self.dst_unit = Unit::UNIT_STACK_PUSH_POP;
+        self.di = stack_id as u16;
+        self
+    }
+
+    pub fn stack_peek(mut self, stack_id: u8, offset: u8, dst_reg: u16) -> Self {
+        assert!(stack_id < 8, "Stack ID must be 0-7");
+        assert!(offset < 64, "Stack offset must be 0-63");
+        self.src_unit = Unit::UNIT_STACK_INDEX;
+        // Pack stack_id in bits 2:0, offset in bits 8:3
+        self.si = (stack_id as u16) | ((offset as u16) << 3);
+        self.dst_unit = Unit::UNIT_REGISTER;
+        self.di = dst_reg;
+        self
+    }
+
+    pub fn stack_poke(mut self, stack_id: u8, offset: u8, src_reg: u16) -> Self {
+        assert!(stack_id < 8, "Stack ID must be 0-7");
+        assert!(offset < 64, "Stack offset must be 0-63");
+        self.src_unit = Unit::UNIT_REGISTER;
+        self.si = src_reg;
+        self.dst_unit = Unit::UNIT_STACK_INDEX;
+        // Pack stack_id in bits 2:0, offset in bits 8:3
+        self.di = (stack_id as u16) | ((offset as u16) << 3);
+        self
+    }
 }
 
 // Convenience function to match C++ style

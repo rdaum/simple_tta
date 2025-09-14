@@ -22,8 +22,8 @@ typedef enum bit [3:0] {
 
 typedef enum bit[3:0] {
     UNIT_NONE = 0,
-    UNIT_STACK_PUSH_POP = 1,  // TODO: Not implemented yet
-    UNIT_STACK_INDEX = 2,     // TODO: Not implemented yet
+    UNIT_STACK_PUSH_POP = 1,
+    UNIT_STACK_INDEX = 2,
     UNIT_REGISTER = 3,
     UNIT_ALU_LEFT = 4,
     UNIT_ALU_RIGHT = 5,
