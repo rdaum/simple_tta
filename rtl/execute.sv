@@ -482,6 +482,11 @@ module execute #(
                 done_o <= 1'b1;
                 exec_state <= EXEC_START_SRC;
               end
+              UNIT_TAG_CMP: begin
+                cond_reg <= (resolved_src[DATA_WIDTH-1:VAL_WIDTH] == dst_immediate_i[TAG_WIDTH-1:0]);
+                done_o <= 1'b1;
+                exec_state <= EXEC_START_SRC;
+              end
               UNIT_NONE: begin
                 done_o <= 1'b1;
                 exec_state <= EXEC_START_SRC;
@@ -655,6 +660,11 @@ module execute #(
                   pc_write_o <= src_value[VAL_WIDTH-1:0];
                   pc_write_en_o <= 1'b1;
               end
+              done_o <= 1'b1;
+              exec_state <= EXEC_START_SRC;
+            end
+            UNIT_TAG_CMP: begin
+              cond_reg <= (src_value[DATA_WIDTH-1:VAL_WIDTH] == dst_immediate_i[TAG_WIDTH-1:0]);
               done_o <= 1'b1;
               exec_state <= EXEC_START_SRC;
             end

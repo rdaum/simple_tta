@@ -71,7 +71,8 @@ typedef enum bit[4:0] {
     UNIT_STACK_POP_VALUE  = 20,  // Pop with VALUE mode (tag bits zeroed)
     UNIT_STACK_POP_TAG    = 21,  // Pop with TAG mode (tag bits only)
     UNIT_STACK_PEEK_VALUE = 22,  // Peek with VALUE mode (tag bits zeroed)
-    UNIT_STACK_PEEK_TAG   = 23   // Peek with TAG mode (tag bits only)
+    UNIT_STACK_PEEK_TAG   = 23,  // Peek with TAG mode (tag bits only)
+    UNIT_TAG_CMP          = 24   // Dest only: set cond = (src tag == imm[3:0])
 } Unit;
 
 // Predicate flag bit positions within the 6-bit flags field.

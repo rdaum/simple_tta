@@ -110,7 +110,8 @@ destination require an extended operand.
 | 21 | `STACK_POP_TAG` | Pop with tag bits only | -- |
 | 22 | `STACK_PEEK_VALUE` | Peek with tag bits zeroed | -- |
 | 23 | `STACK_PEEK_TAG` | Peek with tag bits only | -- |
-| 24-31 | *free* | 8 slots for future units | |
+| 24 | `TAG_CMP` | -- | Set cond = (src tag == imm[3:0]) |
+| 25-31 | *free* | 7 slots for future units | |
 
 ### ALU operations
 
@@ -189,11 +190,15 @@ reg[r0, DEREF+0] → reg[1]   ; car — load mem[20]
 reg[r0, DEREF+1] → reg[2]   ; cdr — load mem[21]
 ```
 
-Type dispatch becomes two instructions:
+Type dispatch uses `TAG_CMP` for single-instruction tag checks:
 
 ```
-reg[r0, TAG] → cond          ; extract 4-bit tag, set condition
-HANDLER → pc_cond            ; branch if tag is nonzero
+reg[r0] → tag_cmp[CONS]               ; cond = (r0.tag == CONS)?
+HANDLER → pc_cond                      ; branch if cons
+
+; Or branchless with predication:
+reg[r0] → tag_cmp[CONS]               ; cond = is_cons?
+reg[r0, DEREF+0] → reg[1]  [if_set]   ; car, only if cons — no stall
 ```
 
 **Stacks** support VALUE and TAG modes via dedicated unit types
@@ -352,6 +357,8 @@ warm (fetch latency hidden).
 | push (via operand) | 5 | 2-word + stack handshake |
 | pop → reg | 5 | Stack handshake + arming cycle |
 | pop_tag → reg | 5 | Same as pop, tag mask applied |
+| reg → tag_cmp[N] | 2 | Compare tag, set cond, fused |
+| tag_cmp + predicated DEREF | 4 | Type check + car in 2 instructions |
 | predicated skip | 1 | Condition doesn't match, no-op |
 
 The common case — register/immediate/ALU moves — is 2 cycles.

@@ -58,6 +58,7 @@ pub enum Unit {
     UNIT_STACK_POP_TAG = 21,    // pop with TAG mode (tag bits only)
     UNIT_STACK_PEEK_VALUE = 22, // peek with VALUE mode (tag bits zeroed)
     UNIT_STACK_PEEK_TAG = 23,   // peek with TAG mode (tag bits only)
+    UNIT_TAG_CMP = 24,          // dest only: set cond = (src tag == imm[3:0])
 }
 
 impl Unit {
@@ -406,6 +407,14 @@ impl Instr {
         assert!(offset < 32, "Stack offset must be 0-31");
         self.src_unit = Unit::UNIT_STACK_PEEK_TAG;
         self.si = stack_id | (offset << 3);
+        self
+    }
+
+    /// Set destination to tag compare: sets cond = (src_value tag == expected_tag).
+    pub fn dst_tag_cmp(mut self, expected_tag: u8) -> Self {
+        assert!(expected_tag < 16, "Tag must be 0-15");
+        self.dst_unit = Unit::UNIT_TAG_CMP;
+        self.di = expected_tag;
         self
     }
 }

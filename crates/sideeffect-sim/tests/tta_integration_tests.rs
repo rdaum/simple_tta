@@ -3250,4 +3250,95 @@ mod tests {
 
         Ok(())
     }
+
+    #[test]
+    fn test_tag_cmp_match() -> Result<(), Box<dyn std::error::Error>> {
+        // TAG_CMP sets cond=1 when the source value's tag matches the expected tag.
+        let runtime = create_runtime()?;
+        let mut tta = runtime
+            .create_model_simple::<TtaTestbench>()
+            .map_err(|e| format!("Failed to create model: {:?}", e))?;
+        let mut helper = TtaTestHelper::new();
+
+        tta.rst_i = 1;
+        tta.clk_i = 0;
+        tta.instr_ready_i = 0;
+        tta.data_ready_i = 0;
+        tta.instr_data_read_i = 0;
+        tta.data_data_read_i = 0;
+
+        let program = vec![
+            // Load value 42 into r0, set tag to 5
+            instr().src(Unit::UNIT_ABS_IMMEDIATE).si(42).dst(Unit::UNIT_REGISTER).di(0),
+            instr().src(Unit::UNIT_ABS_IMMEDIATE).si(5).dst_reg_tag(0),
+            // TAG_CMP: does r0's tag == 5?
+            instr().src(Unit::UNIT_REGISTER).si(0).dst_tag_cmp(5),
+            // Store cond to mem[100]
+            instr().src(Unit::UNIT_COND).dst(Unit::UNIT_MEMORY_IMMEDIATE).di(100),
+            // TAG_CMP: does r0's tag == 3? (should be false)
+            instr().src(Unit::UNIT_REGISTER).si(0).dst_tag_cmp(3),
+            // Store cond to mem[101]
+            instr().src(Unit::UNIT_COND).dst(Unit::UNIT_MEMORY_IMMEDIATE).di(101),
+        ];
+
+        let mut machine_code = Vec::new();
+        for i in &program {
+            machine_code.extend(i.assemble());
+        }
+        helper.load_instructions(&machine_code, 0);
+        helper.run_until_reset_released(&mut tta)?;
+        helper.run_for_cycles(&mut tta, 200);
+
+        assert_eq!(helper.get_data_memory(100), 1, "TAG_CMP should match (tag=5 == 5)");
+        assert_eq!(helper.get_data_memory(101), 0, "TAG_CMP should not match (tag=5 != 3)");
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_tag_cmp_type_dispatch() -> Result<(), Box<dyn std::error::Error>> {
+        // Use TAG_CMP + predication for branchless type dispatch.
+        let runtime = create_runtime()?;
+        let mut tta = runtime
+            .create_model_simple::<TtaTestbench>()
+            .map_err(|e| format!("Failed to create model: {:?}", e))?;
+        let mut helper = TtaTestHelper::new();
+
+        tta.rst_i = 1;
+        tta.clk_i = 0;
+        tta.instr_ready_i = 0;
+        tta.data_ready_i = 0;
+        tta.instr_data_read_i = 0;
+        tta.data_data_read_i = 0;
+
+        // r0 has tag=1 (cons). Use TAG_CMP to check, then predicated DEREF.
+        // Set up a cons cell at address 50: car=0xCAFE, cdr=0xBEEF
+        helper.set_data_memory(50, 0xCAFE);
+        helper.set_data_memory(51, 0xBEEF);
+
+        let program = vec![
+            // Load address 50 into r0, tag=1 (cons)
+            instr().src(Unit::UNIT_ABS_IMMEDIATE).si(50).dst(Unit::UNIT_REGISTER).di(0),
+            instr().src(Unit::UNIT_ABS_IMMEDIATE).si(1).dst_reg_tag(0),
+            // TAG_CMP: is r0 a cons (tag==1)?
+            instr().src(Unit::UNIT_REGISTER).si(0).dst_tag_cmp(1),
+            // Predicated DEREF: load car only if tag matched
+            instr().src_deref(0, 0).dst(Unit::UNIT_REGISTER).di(1).predicate_if_set(),
+            // Store r1 to mem[100]
+            instr().src(Unit::UNIT_REGISTER).si(1).dst(Unit::UNIT_MEMORY_IMMEDIATE).di(100),
+        ];
+
+        let mut machine_code = Vec::new();
+        for i in &program {
+            machine_code.extend(i.assemble());
+        }
+        helper.load_instructions(&machine_code, 0);
+        helper.run_until_reset_released(&mut tta)?;
+        helper.run_for_cycles(&mut tta, 200);
+
+        assert_eq!(helper.get_data_memory(100), 0xCAFE,
+            "Predicated car via TAG_CMP should load 0xCAFE");
+
+        Ok(())
+    }
 }
