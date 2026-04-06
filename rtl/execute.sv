@@ -46,7 +46,7 @@ module execute (
   );
 
   // ALU bank: 8 independently addressable compute lanes.
-  logic alu_select[`NUM_ALUS-1:0];
+  // Results are combinational — available immediately from stored operands.
   logic [31:0] alu_in_data_a[`NUM_ALUS-1:0];
   logic [31:0] alu_in_data_b[`NUM_ALUS-1:0];
   logic [31:0] alu_out_data[`NUM_ALUS-1:0];
@@ -54,11 +54,10 @@ module execute (
   alu_unit alu_unit[`NUM_ALUS-1:0] (
       .rst_i(rst_i),
       .clk_i(clk_i),
-      .sel_i(alu_select),
       .oper_i(alu_operation),
       .a_data_i(alu_in_data_a),
       .b_data_i(alu_in_data_b),
-      .data_o(alu_out_data)
+      .data_raw_o(alu_out_data)
   );
 
   // Shared stack unit implementing 8 logical stacks.
@@ -90,14 +89,12 @@ module execute (
   //  EXEC_START_SRC ──→ (immediate units) ──→ EXEC_START_DST ──→ done
   //       │                                         │
   //       ├─→ EXEC_SRC_MEM_RETRIEVE ──→ EXEC_START_DST
-  //       ├─→ EXEC_SRC_ALU_RETRIEVE ──→ EXEC_START_DST
   //       └─→ EXEC_SRC_STACK_WAIT   ──→ EXEC_START_DST
   //                                         │
   //                                         └─→ EXEC_DST_STACK_WAIT ──→ done
   typedef enum {
-    EXEC_START_SRC,       // Begin source resolution
+    EXEC_START_SRC,       // Begin source resolution (fuses dst for immediate moves)
     EXEC_SRC_MEM_RETRIEVE,// Wait for data_bus.ready on a memory read
-    EXEC_SRC_ALU_RETRIEVE,// Extra cycle to latch registered ALU output
     EXEC_SRC_STACK_WAIT,  // Wait for stack_ready after pop / peek
     EXEC_START_DST,       // Route src_value to the destination unit
     EXEC_DST_STACK_WAIT   // Wait for stack_ready after push / poke
@@ -174,7 +171,6 @@ module execute (
       reg_unit_select = '{default: 1'b0};
       reg_unit_write = '{default: 1'b0};
 
-      alu_select = '{default: 1'b0};
       alu_operation = '{default: ALU_NOP};
 
       // Initialize stack signals
@@ -199,7 +195,6 @@ module execute (
           pc_write_en_o = 1'b0;
           reg_unit_select = '{default: 1'b0};
           reg_unit_write = '{default: 1'b0};
-          alu_select = '{default: 1'b0};
           data_bus.valid = 1'b0;
           data_bus.wstrb = 4'b0000;
           data_bus.instr = 1'b0;
@@ -260,8 +255,9 @@ module execute (
               src_resolved = 1'b1;
             end
             UNIT_ALU_RESULT: begin
-              alu_select[src_immediate_i[2:0]] = 1'b1;
-              exec_state = EXEC_SRC_ALU_RETRIEVE;
+              // ALU results are combinational — read directly, no wait.
+              src_value = alu_out_data[src_immediate_i[2:0]];
+              src_resolved = 1'b1;
             end
             UNIT_ABS_IMMEDIATE: begin
               src_value  = {20'b0, src_immediate_i};
@@ -395,10 +391,6 @@ module execute (
             data_bus.valid = 1'b0;
             exec_state = EXEC_START_DST;
           end
-        end
-        EXEC_SRC_ALU_RETRIEVE: begin
-          src_value  = alu_out_data[src_immediate_i[2:0]];
-          exec_state = EXEC_START_DST;
         end
         EXEC_SRC_STACK_WAIT: begin
           // Clear stack control signals after first cycle
