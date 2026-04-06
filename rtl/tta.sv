@@ -5,10 +5,11 @@
 //   decoder    — combinational: splits opcode into unit + immediates
 //   execute    — reads the source, writes the destination via data_bus
 //
-// The sequencer runs the bus fetch independently of execute, so the next
-// instruction's opcode read overlaps with the current instruction's
-// execution. This hides bus latency for sequential (non-branch) code.
-// All addresses are *word*-addressed.
+// The sequencer and execute communicate via a valid/accept handshake:
+//   - instr_valid: sequencer has a complete instruction in its buffer
+//   - instr_accept: execute is consuming the instruction this cycle
+// The sequencer prefetches the next instruction while execute runs,
+// hiding bus latency for sequential code. All addresses are word-addressed.
 module tta (
     input wire rst_i,           // Synchronous reset (active high)
     input wire clk_i,           // System clock
@@ -22,11 +23,12 @@ module tta (
   logic [31:0] dst_operand;
   logic [31:0] op;
   logic done_exec;
-  logic exec_busy;
 
   assign instr_done_o = done_exec;
 
-  logic sequencer_done;
+  // Valid/accept handshake between sequencer and execute.
+  wire instr_valid;
+  wire instr_accept;
 
   // PC write interface from execute (jumps / conditional branches).
   logic [31:0] pc_write;
@@ -38,12 +40,12 @@ module tta (
       .instr_bus(instr_bus),
       .pc_o(pc),
       .op_o(op),
-      .exec_busy_i(exec_busy),
+      .instr_valid_o(instr_valid),
+      .instr_accept_i(instr_accept),
       .src_operand_o(src_operand),
       .dst_operand_o(dst_operand),
       .pc_write_i(pc_write),
-      .pc_write_en_i(pc_write_en),
-      .done_o(sequencer_done)
+      .pc_write_en_i(pc_write_en)
   );
   Unit src_unit;
   Unit dst_unit;
@@ -62,7 +64,6 @@ module tta (
       .rst_i(rst_i),
       .clk_i(clk_i),
       .pc_i(pc),
-      .sel_i(sequencer_done),
       .data_bus(data_bus),
       .src_unit_i(src_unit),
       .src_immediate_i(si),
@@ -73,7 +74,8 @@ module tta (
       .pc_write_o(pc_write),
       .pc_write_en_o(pc_write_en),
       .done_o(done_exec),
-      .busy_o(exec_busy)
+      .instr_valid_i(instr_valid),
+      .instr_accept_o(instr_accept)
   );
 
 endmodule : tta

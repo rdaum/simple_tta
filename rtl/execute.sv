@@ -16,7 +16,6 @@
 module execute (
     input wire clk_i,                   // System clock
     input wire rst_i,                   // Synchronous reset (active high)
-    input wire sel_i,                   // Execute enable — from sequencer done
     input wire [31:0] pc_i,             // Current program counter (for UNIT_PC reads)
     input Unit src_unit_i,              // Source unit selector (from decoder)
     input logic [11:0] src_immediate_i, // Source immediate field
@@ -28,7 +27,10 @@ module execute (
     output logic [31:0] pc_write_o,     // PC value for jumps (to sequencer)
     output logic        pc_write_en_o,  // High to override PC (jump taken)
     output logic done_o,                // Pulses high when the move is complete
-    output wire  busy_o                 // High while execute is processing
+
+    // Valid/accept handshake with sequencer.
+    input  wire         instr_valid_i,  // Sequencer has a complete instruction ready
+    output wire         instr_accept_o  // Execute is consuming the instruction this cycle
 );
   // Architectural register file: 32 independent 32-bit cells.
   logic reg_unit_select[`NUM_REGISTERS-1:0];
@@ -103,11 +105,13 @@ module execute (
   ExecState exec_state;
   logic [31:0] src_value;
 
-  // Execute runs autonomously once triggered by sel_i. This latch allows
-  // the sequencer to pulse sel_i for one cycle and move on to prefetch
-  // while execute continues processing multi-cycle operations.
+  // Execute runs autonomously once triggered via the valid/accept handshake.
+  // exec_active stays high through multi-cycle operations until done_o fires.
   logic exec_active;
-  assign busy_o = exec_active;
+
+  // Accept is combinational: fires for exactly one cycle when a valid
+  // instruction is presented and execute is idle.
+  assign instr_accept_o = instr_valid_i && !exec_active && !done_o;
   logic stack_wait_armed;
 
   // 1-bit condition register for conditional branches.
@@ -206,20 +210,20 @@ module execute (
 
       done_o <= 1'b0;
     end else begin
-      automatic logic start_execute = sel_i && !exec_active && !done_o;
-      automatic logic run_execute = (exec_active || start_execute) && !done_o;
+      // Run the FSM when exec_active is set. Accept fires on cycle N and
+      // latches exec_active via <=, so the FSM first runs on cycle N+1 —
+      // after the sequencer has promoted the prefetch buffer to op_o.
+      automatic logic run_execute = exec_active && !done_o;
 
-      // Auto-clear done_o and pc_write_en_o after one cycle. This
-      // makes done_o a pulse rather than a held level, enabling the
-      // sequencer to detect completion and move on.
+      // Auto-clear done_o and pc_write_en_o after one cycle.
       if (done_o) begin
         done_o <= 1'b0;
         pc_write_en_o <= 1'b0;
         exec_active <= 1'b0;
       end
 
-      // Start on sel_i pulse; stay active through multi-cycle operations.
-      if (start_execute)
+      // Latch active on accept; stay active through multi-cycle operations.
+      if (instr_accept_o)
         exec_active <= 1'b1;
 
       if (run_execute) begin

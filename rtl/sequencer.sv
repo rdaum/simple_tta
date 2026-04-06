@@ -9,10 +9,18 @@
 //   1. Fetch FSM: reads instruction words from instr_bus into the
 //      prefetch buffer. Runs unconditionally (overlaps with execute).
 //   2. Prefetch buffer + valid flag: holds the complete fetched
-//      instruction until execute is ready.
-//   3. Handoff: when prefetch_valid && !exec_busy_i, promotes the
-//      buffer to the decoder-facing outputs and pulses done_o.
-//      This happens in exactly one place.
+//      instruction until execute accepts it.
+//   3. Handoff: when instr_accept_i fires, promotes the buffer to
+//      the decoder-facing outputs and clears valid. This happens
+//      in exactly one place.
+//
+// The valid/accept contract:
+//   - instr_valid_o is high whenever the prefetch buffer holds a
+//     complete instruction. It stays high until accepted.
+//   - instr_accept_i is a combinational signal from execute, high
+//     for exactly one cycle when execute consumes the instruction.
+//   - On accept, the sequencer promotes the buffer to outputs and
+//     clears valid, allowing the fetch FSM to start the next fetch.
 //
 // On a taken branch, pc_write_en_i clears prefetch_valid and restarts
 // the fetch FSM from the new PC.
@@ -25,13 +33,13 @@ module sequencer (
     output logic [31:0] src_operand_o,  // 32-bit source operand (when needed)
     output logic [31:0] dst_operand_o,  // 32-bit destination operand (when needed)
 
-    input  logic        exec_busy_i,    // High while execute is processing
+    // Valid/accept handshake with execute.
+    output wire         instr_valid_o,  // Prefetch buffer has a complete instruction
+    input  wire         instr_accept_i, // Execute is consuming the instruction this cycle
 
     // PC override from execute (for jumps / conditional branches).
     input  logic [31:0] pc_write_i,     // New PC value
-    input  logic        pc_write_en_i,  // High to override PC with pc_write_i
-
-    output logic done_o                 // Pulses high when instruction is ready
+    input  logic        pc_write_en_i   // High to override PC with pc_write_i
 );
 
   // --- Fetch FSM state ---
@@ -49,6 +57,9 @@ module sequencer (
   logic [31:0] prefetch_op;
   logic [31:0] prefetch_src_operand;
   logic [31:0] prefetch_dst_operand;
+
+  // Valid is a level signal: high when buffer holds a complete instruction.
+  assign instr_valid_o = prefetch_valid;
 
   // --- Helpers ---
   function automatic logic needs_src_op(logic [31:0] raw_op);
@@ -74,7 +85,6 @@ module sequencer (
       prefetch_op <= 32'b0;
       prefetch_src_operand <= 32'b0;
       prefetch_dst_operand <= 32'b0;
-      done_o <= 1'b0;
       fetch_state <= SEQ_FETCH_START;
       instr_bus.valid <= 1'b0;
       instr_bus.instr <= 1'b0;
@@ -84,24 +94,19 @@ module sequencer (
       pc_o <= pc_write_i;
       prefetch_valid <= 1'b0;
       instr_bus.valid <= 1'b0;
-      done_o <= 1'b0;
       fetch_state <= SEQ_FETCH_START;
     end else begin
 
-      // === Handoff: promote prefetch buffer to outputs ===
-      // This is the ONLY place done_o is asserted and outputs are updated.
-      if (done_o) begin
-        done_o <= 1'b0;
-      end else if (prefetch_valid && !exec_busy_i) begin
+      // === Handoff: promote prefetch buffer to decoder-facing outputs ===
+      // This is the ONLY place outputs are updated.
+      // instr_accept_i is combinational from execute — it fires for one
+      // cycle when execute is idle and prefetch_valid is high.
+      if (instr_accept_i) begin
         op_o <= prefetch_op;
         src_operand_o <= prefetch_src_operand;
         dst_operand_o <= prefetch_dst_operand;
-        done_o <= 1'b1;
         prefetch_valid <= 1'b0;
-        // Kick the fetch FSM to start the next instruction.
-        // (If it's already in FETCH_IDLE, it will advance on the
-        // next cycle. If it finished fetching while we were waiting,
-        // it's already idle.)
+        // Kick the fetch FSM if it's waiting for the buffer to drain.
         if (fetch_state == SEQ_FETCH_IDLE)
           fetch_state <= SEQ_FETCH_START;
       end
@@ -109,8 +114,8 @@ module sequencer (
       // === Fetch FSM: runs unconditionally (prefetch) ===
       case (fetch_state)
         SEQ_FETCH_START: begin
-          if (!prefetch_valid) begin
-            // Only start a new fetch if the prefetch buffer is empty.
+          if (!prefetch_valid || instr_accept_i) begin
+            // Buffer is empty (or being drained this cycle). Start fetch.
             instr_bus.valid <= 1'b1;
             instr_bus.instr <= 1'b1;
             instr_bus.addr <= pc_o;
@@ -178,7 +183,7 @@ module sequencer (
         SEQ_FETCH_IDLE: begin
           // Waiting for handoff to clear prefetch_valid.
           // The handoff block above will set fetch_state <= SEQ_FETCH_START
-          // when it promotes the buffer.
+          // when it consumes the buffer.
         end
       endcase
     end
