@@ -91,7 +91,7 @@ destination require an extended operand.
 | `STACK_INDEX`      | Peek at offset in stack N (mode-aware)  | Poke at offset in stack N              |
 
 All 16 unit codes are assigned. The assembler in
-`crates/tta-asm/src/assembler.rs` is the authoritative reference
+`crates/sideeffect-asm/src/assembler.rs` is the authoritative reference
 for encoding details.
 
 ### ALU operations
@@ -229,8 +229,8 @@ logic in the existing data path.
 
 ### Dataflow compiler
 
-The `tta-asm` crate includes a dataflow graph compiler
-(`crates/tta-asm/src/dataflow.rs`) for programmatic code
+The `sideeffect-asm` crate includes a dataflow graph compiler
+(`crates/sideeffect-asm/src/dataflow.rs`) for programmatic code
 generation. Build a graph of operations with data dependencies,
 and the compiler emits scheduled TTA move sequences:
 
@@ -344,11 +344,11 @@ for sequential code; branches stall the fetch until resolved.
 
 The Rust code is a Cargo workspace with two crates:
 
-* **`crates/tta-asm`** — assembler and dataflow compiler. Pure
+* **`crates/sideeffect-asm`** — assembler and dataflow compiler. Pure
   Rust, no simulator dependencies. Use this to generate TTA
   programs without a hardware simulator.
-* **`crates/tta-sim`** — Verilator/Marlin simulator runtime, CLI,
-  and all tests. Depends on `tta-asm` and re-exports its types.
+* **`crates/sideeffect-sim`** — Verilator/Marlin simulator runtime, CLI,
+  and all tests. Depends on `sideeffect-asm` and re-exports its types.
 
 HDL sources live in `rtl/`, with top-level simulation wrappers
 `tta_tb.sv` and `simtop.sv` at the repo root.
@@ -357,9 +357,9 @@ HDL sources live in `rtl/`, with top-level simulation wrappers
 
 * `cargo test` runs the full test suite (113 tests: unit,
   integration, and property-based)
-* `cargo run -p tta-sim -- --cycles 200` runs the Marlin-backed
+* `cargo run -p sideeffect-sim -- --cycles 200` runs the Marlin-backed
   `simtop` wrapper with boot ROM and external SRAM modeling
-* `cargo run -p tta-sim -- --trace-file simtop.vcd` writes a VCD
+* `cargo run -p sideeffect-sim -- --trace-file simtop.vcd` writes a VCD
   trace for debugging
 * A simple fusesoc core file is present for FPGA synthesis
 

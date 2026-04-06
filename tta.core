@@ -1,6 +1,6 @@
 CAPI=2:
-name: "::simple_tta:0.1"
-description: "Simple TTA processor"
+name: "::sideeffect:0.1"
+description: "Moveonly TTA processor"
 filesets:
   files_tta:
     files:

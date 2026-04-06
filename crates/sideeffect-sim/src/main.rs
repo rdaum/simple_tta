@@ -1,6 +1,6 @@
 use eyre::Result;
 use marlin::verilator::VerilatedModelConfig;
-use tta_sim::{create_simtop_runtime, SimTop, SimTopHarness};
+use sideeffect_sim::{create_simtop_runtime, SimTop, SimTopHarness};
 
 struct CliOptions {
     cycles: u32,
@@ -43,7 +43,7 @@ fn parse_args() -> Result<CliOptions> {
                 trace_file = Some(value);
             }
             "--help" | "-h" => {
-                println!("Usage: tta-sim [--cycles N] [--reset-cycles N] [--sram-words N] [--trace-file PATH]");
+                println!("Usage: sideeffect-sim [--cycles N] [--reset-cycles N] [--sram-words N] [--trace-file PATH]");
                 std::process::exit(0);
             }
             other => {

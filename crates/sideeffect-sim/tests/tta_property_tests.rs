@@ -2,7 +2,7 @@ use marlin::verilator::VerilatorRuntime;
 use proptest::prelude::*;
 use std::collections::HashMap;
 
-use tta_sim::{create_tta_runtime, instr, AccessWidth, ALUOp, RegMode, TtaTestbench, Unit};
+use sideeffect_sim::{create_tta_runtime, instr, AccessWidth, ALUOp, RegMode, TtaTestbench, Unit};
 
 fn create_runtime() -> Result<VerilatorRuntime, Box<dyn std::error::Error>> {
     Ok(create_tta_runtime()?)

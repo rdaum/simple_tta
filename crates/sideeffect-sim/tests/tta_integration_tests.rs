@@ -1,8 +1,8 @@
 use marlin::verilator::{VerilatedModelConfig, VerilatorRuntime};
 use std::collections::HashMap;
 
-use tta_sim::{create_tta_runtime, instr, AccessWidth, RegMode, TtaTestbench, Unit};
-use tta_sim::dataflow::Graph;
+use sideeffect_sim::{create_tta_runtime, instr, AccessWidth, RegMode, TtaTestbench, Unit};
+use sideeffect_sim::dataflow::Graph;
 
 fn create_runtime() -> Result<VerilatorRuntime, Box<dyn std::error::Error>> {
     Ok(create_tta_runtime()?)

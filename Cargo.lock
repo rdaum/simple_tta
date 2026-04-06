@@ -714,6 +714,23 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 
 [[package]]
+name = "sideeffect-asm"
+version = "0.1.0"
+
+[[package]]
+name = "sideeffect-sim"
+version = "0.1.0"
+dependencies = [
+ "camino",
+ "env_logger",
+ "eyre",
+ "marlin",
+ "proptest",
+ "sideeffect-asm",
+ "tokio",
+]
+
+[[package]]
 name = "signal-hook-registry"
 version = "1.4.6"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -938,23 +955,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.106",
-]
-
-[[package]]
-name = "tta-asm"
-version = "0.1.0"
-
-[[package]]
-name = "tta-sim"
-version = "0.1.0"
-dependencies = [
- "camino",
- "env_logger",
- "eyre",
- "marlin",
- "proptest",
- "tokio",
- "tta-asm",
 ]
 
 [[package]]

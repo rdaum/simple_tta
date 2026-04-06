@@ -3,8 +3,8 @@
 ## Project Structure & Module Organization
 Cargo workspace with two crates:
 
-- **`crates/tta-asm`**: assembler (`assembler.rs`) and dataflow compiler (`dataflow.rs`). Pure Rust, no simulator dependencies.
-- **`crates/tta-sim`**: Verilator/Marlin simulator (`simulator.rs`), CLI (`main.rs`), integration tests, and property tests. Depends on `tta-asm` and re-exports its types.
+- **`crates/sideeffect-asm`**: assembler (`assembler.rs`) and dataflow compiler (`dataflow.rs`). Pure Rust, no simulator dependencies.
+- **`crates/sideeffect-sim`**: Verilator/Marlin simulator (`simulator.rs`), CLI (`main.rs`), integration tests, and property tests. Depends on `sideeffect-asm` and re-exports its types.
 
 HDL sources live in `rtl/`, with top-level simulation wrappers `tta_tb.sv` and `simtop.sv` at the repo root.
 
@@ -14,8 +14,8 @@ RTL modules: `decoder.sv` (combinational), `register_unit.sv`, `alu_unit.sv` (co
 Use Cargo for day-to-day work:
 
 - `cargo build` builds all crates.
-- `cargo run -p tta-sim -- --cycles 200` runs the `simtop` Marlin simulator.
-- `cargo run -p tta-sim -- --trace-file simtop.vcd` writes a VCD trace while simulating.
+- `cargo run -p sideeffect-sim -- --cycles 200` runs the `simtop` Marlin simulator.
+- `cargo run -p sideeffect-sim -- --trace-file simtop.vcd` writes a VCD trace while simulating.
 - `cargo test` runs all tests across both crates (~113 tests).
 - `cargo fmt` formats Rust code before review.
 
@@ -30,7 +30,7 @@ Follow standard Rust formatting with 4-space indentation and `cargo fmt`. Use `s
 RTL: use non-blocking assignments (`<=`) in all sequential logic. Blocking assignments (`=`) only for combinational intermediates (`always_comb` blocks). Module ports use plain `logic [N:0]` types, not typedef'd enums (Yosys compatibility). Typedef enums in `common.vh` are for internal use only.
 
 ## Testing Guidelines
-Add or update tests for every behavior change. Keep integration coverage in `crates/tta-sim/tests/tta_integration_tests.rs` and use `proptest` patterns in `crates/tta-sim/tests/tta_property_tests.rs` for invariant-style checks. Name tests descriptively with `test_` or `prop_` prefixes to match the current suite. Run `cargo test` locally before opening a PR. Run `verilator --lint-only -Wall` after any RTL change.
+Add or update tests for every behavior change. Keep integration coverage in `crates/sideeffect-sim/tests/tta_integration_tests.rs` and use `proptest` patterns in `crates/sideeffect-sim/tests/tta_property_tests.rs` for invariant-style checks. Name tests descriptively with `test_` or `prop_` prefixes to match the current suite. Run `cargo test` locally before opening a PR. Run `verilator --lint-only -Wall` after any RTL change.
 
 ## Commit & Pull Request Guidelines
 Prefer short, imperative commit subjects. PRs should explain the behavioral change, note affected areas (`crates/`, `rtl/`), and include test results.
