@@ -37,7 +37,14 @@ module tta #(
     output logic        data_valid_o,
     output logic        data_instr_o,
     input  logic        data_ready_i,
-    input  logic [DATA_WIDTH-1:0] data_read_data_i
+    input  logic [DATA_WIDTH-1:0] data_read_data_i,
+
+    // Host mailbox interface
+    input  logic [DATA_WIDTH-1:0] mailbox_data_i,
+    input  logic                  mailbox_valid_i,
+    output logic                  mailbox_ack_o,
+    output logic [DATA_WIDTH-1:0] mailbox_out_o,
+    output logic                  mailbox_out_valid_o
 );
 
   // pc is the instruction PC promoted from the queue on accept. Execute
@@ -125,6 +132,11 @@ module tta #(
       .flags_i(flags),
       .pc_write_o(pc_write),
       .pc_write_en_o(pc_write_en),
+      .mailbox_data_i(mailbox_data_i),
+      .mailbox_valid_i(mailbox_valid_i),
+      .mailbox_ack_o(mailbox_ack_o),
+      .mailbox_out_o(mailbox_out_o),
+      .mailbox_out_valid_o(mailbox_out_valid_o),
       .done_o(done_exec),
       .instr_valid_i(instr_valid),
       .instr_accept_o(instr_accept)

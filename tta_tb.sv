@@ -20,7 +20,14 @@ module tta_tb(
     output wire [35:0] data_data_write_o,
     output wire [3:0] data_wstrb_o,
 
-    output wire instr_done_o
+    output wire instr_done_o,
+
+    // Host mailbox (36-bit data)
+    input wire [35:0] mailbox_data_i,
+    input wire mailbox_valid_i,
+    output wire mailbox_ack_o,
+    output wire [35:0] mailbox_out_o,
+    output wire mailbox_out_valid_o
 );
 
 tta tta_core(
@@ -40,7 +47,12 @@ tta tta_core(
     .data_valid_o(data_valid_o),
     .data_instr_o(),
     .data_ready_i(data_ready_i),
-    .data_read_data_i(data_data_read_i)
+    .data_read_data_i(data_data_read_i),
+    .mailbox_data_i(mailbox_data_i),
+    .mailbox_valid_i(mailbox_valid_i),
+    .mailbox_ack_o(mailbox_ack_o),
+    .mailbox_out_o(mailbox_out_o),
+    .mailbox_out_valid_o(mailbox_out_valid_o)
 );
 
 endmodule

@@ -114,7 +114,8 @@ destination require an extended operand.
 | 25 | `ALLOC` | -- | Store value at heap_ptr, heap_ptr++ |
 | 26 | `ALLOC_PTR` | Read {si[3:0] as tag, heap_ptr} | -- |
 | 27 | `CALL` | -- | Push return addr to stack 1, jump |
-| 28-31 | *free* | 4 slots for future units | |
+| 28 | `MAILBOX` | Block until host writes | Write value to host |
+| 29-31 | *free* | 3 slots for future units | |
 
 ### ALU operations
 
@@ -275,6 +276,30 @@ Nested calls work naturally — stack 1 is a LIFO call stack
 `pc_i`, the address of the next sequential instruction after
 the call, which the sequencer already computes.
 
+### Host mailbox
+
+The `MAILBOX` unit provides a blocking host↔CPU communication
+channel. As a source, it stalls the CPU until the host writes
+a value — no polling, no interrupts. As a destination, it
+writes a value to a host-readable output register.
+
+This enables a coprocessor execution model: the CPU runs a
+boot loop that blocks on the mailbox, and the host sends
+function entry addresses to dispatch work:
+
+```
+; Boot loop (3 instructions, resident at fixed address):
+mailbox → call           ; block until host sends addr, call it
+r1 → mailbox             ; return result to host
+operand(BOOT) → pc       ; loop
+```
+
+The Lisp REPL uses this pattern — the Verilator simulation
+keeps the CPU alive between expressions with all hardware
+state (heap, registers, stacks) preserved. The host compiles
+each expression, loads it into instruction memory, and sends
+the entry address via mailbox.
+
 ### Byte memory access
 
 The `MEM_BYTE` unit provides single-byte loads and stores using
@@ -352,18 +377,22 @@ environment is restored from stack 2.
 ```
 λ> (+ 1 2)
 => 3
-   (28 cycles, 9 words)
+   (34 cycles, 8 words)
 λ> (define (fact n) (if (= n 0) 1 (* n (fact (- n 1)))))
-=> 0
+=> 3
 λ> (fact 10)
 => 3628800
-   (1616 cycles, 48 words)
-λ> (let ((a 5)) (let ((f (lambda (x) (+ x a)))) (f 10)))
-=> 15
+   (1622 cycles, 47 words)
+λ> (fact 5)
+=> 120
+   (857 cycles, 47 words)
 ```
 
 Every expression is compiled to native TTA instructions and
 executed cycle-accurately on the Verilator RTL simulation.
+Hardware state persists between inputs via a mailbox-based
+boot loop — the CPU blocks until the host sends a function
+address, calls it, returns the result, and loops.
 
 ### Microarchitecture
 
@@ -500,11 +529,11 @@ HDL sources live in `rtl/`, with top-level simulation wrappers
 
 ### Building, running
 
-* `cargo test` runs the full test suite (149 tests: unit,
+* `cargo test` runs the full test suite (161 tests: unit,
   integration, property-based, and Lisp end-to-end)
 * `cargo run --bin sideeffect-lisp` launches the Lisp REPL
-  (each expression is compiled to TTA code and executed on
-  the Verilator hardware sim)
+  with persistent hardware state (heap, registers, stacks
+  survive between expressions via mailbox-based dispatch)
 * `cargo run --bin sideeffect-lisp -- "(+ 1 2)"` evaluates a
   single expression
 * `cargo run -p sideeffect-sim -- --cycles 200` runs the Marlin-backed

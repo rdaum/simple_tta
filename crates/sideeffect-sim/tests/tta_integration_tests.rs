@@ -28,6 +28,8 @@ impl TtaTestHelper {
     fn reset<'a>(&mut self, tta: &mut TtaTestbench<'a>) {
         tta.rst_i = 1;
         tta.clk_i = 0;
+        tta.mailbox_valid_i = 0;
+        tta.mailbox_data_i = 0;
         tta.eval();
     }
 
@@ -3574,6 +3576,185 @@ mod tests {
 
         assert_eq!(helper.get_data_memory(100) & 0xFFFF_FFFF, 3,
             "r0 should be 3 after nested calls (func_b sets it last)");
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_mailbox_read_blocks_then_resumes() -> Result<(), Box<dyn std::error::Error>> {
+        // CPU reads from mailbox (blocks), host sends value, CPU resumes and stores it.
+        let runtime = create_runtime()?;
+        let mut tta = runtime
+            .create_model_simple::<TtaTestbench>()
+            .map_err(|e| format!("Failed to create model: {:?}", e))?;
+        let mut helper = TtaTestHelper::new();
+
+        tta.rst_i = 1;
+        tta.clk_i = 0;
+        tta.instr_ready_i = 0;
+        tta.data_ready_i = 0;
+        tta.instr_data_read_i = 0;
+        tta.data_data_read_i = 0;
+        tta.mailbox_valid_i = 0;
+        tta.mailbox_data_i = 0;
+
+        let program = vec![
+            // addr 0: mailbox → reg[0]  (blocks until host writes)
+            instr().src_mailbox().dst_reg(0),
+            // addr 1: reg[0] → mem[100]
+            instr().src_reg(0).dst(Unit::UNIT_MEMORY_IMMEDIATE).di(100),
+        ];
+
+        let mut machine_code = Vec::new();
+        for i in &program {
+            machine_code.extend(i.assemble());
+        }
+        helper.load_instructions(&machine_code, 0);
+        helper.run_until_reset_released(&mut tta)?;
+
+        // Run 50 cycles — CPU should be stalled on mailbox
+        helper.run_for_cycles(&mut tta, 50);
+        assert_eq!(helper.get_data_memory(100), 0, "Should not have written yet");
+
+        // Now host sends a value via mailbox
+        tta.mailbox_data_i = 0xCAFE;
+        tta.mailbox_valid_i = 1;
+        helper.step(&mut tta);
+        // Check if ack fired
+        if tta.mailbox_ack_o != 0 {
+            tta.mailbox_valid_i = 0;
+        }
+        // Run more cycles for the write to complete
+        tta.mailbox_valid_i = 0;
+        helper.run_for_cycles(&mut tta, 50);
+
+        assert_eq!(helper.get_data_memory(100) & 0xFFFF_FFFF, 0xCAFE,
+            "Mailbox value should be stored to mem[100]");
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_mailbox_boot_loop() -> Result<(), Box<dyn std::error::Error>> {
+        // Boot loop: mailbox → call; jump back to 0.
+        // Host sends function address, CPU calls it, returns, blocks again.
+        let runtime = create_runtime()?;
+        let mut tta = runtime
+            .create_model_simple::<TtaTestbench>()
+            .map_err(|e| format!("Failed to create model: {:?}", e))?;
+        let mut helper = TtaTestHelper::new();
+
+        tta.rst_i = 1;
+        tta.clk_i = 0;
+        tta.instr_ready_i = 0;
+        tta.data_ready_i = 0;
+        tta.instr_data_read_i = 0;
+        tta.data_data_read_i = 0;
+        tta.mailbox_valid_i = 0;
+        tta.mailbox_data_i = 0;
+
+        // Boot loop at addr 0:
+        //   0: mailbox → call      (1 word, blocks, return addr = 1)
+        //   1-2: operand(0) → pc   (2 words, jump back to 0)
+        //
+        // Function at addr 3:
+        //   3: imm(42) → reg[0]
+        //   4: reg[0] → mem[100]
+        //   5: pop stack[1] → pc   (return)
+
+        let boot_loop = vec![
+            instr().src_mailbox().dst_call(),
+            instr().src(Unit::UNIT_ABS_OPERAND).soperand(0).dst(Unit::UNIT_PC),
+        ];
+        let function = vec![
+            instr().src(Unit::UNIT_ABS_IMMEDIATE).si(42).dst_reg(0),
+            instr().src_reg(0).dst(Unit::UNIT_MEMORY_IMMEDIATE).di(100),
+            instr().src_pop(1).dst(Unit::UNIT_PC),
+        ];
+
+        let mut machine_code = Vec::new();
+        for i in &boot_loop {
+            machine_code.extend(i.assemble());
+        }
+        assert_eq!(machine_code.len(), 3, "boot loop should be 3 words");
+        for i in &function {
+            machine_code.extend(i.assemble());
+        }
+
+        helper.load_instructions(&machine_code, 0);
+        helper.run_until_reset_released(&mut tta)?;
+
+        // CPU should be blocked on mailbox
+        helper.run_for_cycles(&mut tta, 50);
+        assert_eq!(helper.get_data_memory(100), 0, "Function not called yet");
+
+        // Send function address (3) via mailbox
+        tta.mailbox_data_i = 3;
+        tta.mailbox_valid_i = 1;
+        helper.step(&mut tta);
+        tta.mailbox_valid_i = 0;
+        helper.run_for_cycles(&mut tta, 100);
+
+        assert_eq!(helper.get_data_memory(100) & 0xFFFF_FFFF, 42,
+            "Function should have stored 42 to mem[100]");
+
+        // Send it again — second call should also work (boot loop restarted)
+        helper.set_data_memory(100, 0); // clear
+        tta.mailbox_data_i = 3;
+        tta.mailbox_valid_i = 1;
+        helper.step(&mut tta);
+        tta.mailbox_valid_i = 0;
+        helper.run_for_cycles(&mut tta, 100);
+
+        assert_eq!(helper.get_data_memory(100) & 0xFFFF_FFFF, 42,
+            "Second call should also store 42");
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_mailbox_write_to_host() -> Result<(), Box<dyn std::error::Error>> {
+        // CPU writes a value to the mailbox output.
+        let runtime = create_runtime()?;
+        let mut tta = runtime
+            .create_model_simple::<TtaTestbench>()
+            .map_err(|e| format!("Failed to create model: {:?}", e))?;
+        let mut helper = TtaTestHelper::new();
+
+        tta.rst_i = 1;
+        tta.clk_i = 0;
+        tta.instr_ready_i = 0;
+        tta.data_ready_i = 0;
+        tta.instr_data_read_i = 0;
+        tta.data_data_read_i = 0;
+        tta.mailbox_valid_i = 0;
+        tta.mailbox_data_i = 0;
+
+        let program = vec![
+            instr().src(Unit::UNIT_ABS_IMMEDIATE).si(0xBB).dst_mailbox(),
+        ];
+
+        let mut machine_code = Vec::new();
+        for i in &program {
+            machine_code.extend(i.assemble());
+        }
+        helper.load_instructions(&machine_code, 0);
+        helper.run_until_reset_released(&mut tta)?;
+
+        // Run until mailbox_out_valid fires
+        let mut saw_valid = false;
+        let mut out_value = 0u64;
+        for _ in 0..100 {
+            helper.step(&mut tta);
+            if tta.mailbox_out_valid_o != 0 {
+                out_value = tta.mailbox_out_o;
+                saw_valid = true;
+                break;
+            }
+        }
+
+        assert!(saw_valid, "mailbox_out_valid should pulse");
+        assert_eq!(out_value & 0xFFFF_FFFF, 0xBB, "mailbox output should be 0xBB");
 
         Ok(())
     }

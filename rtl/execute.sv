@@ -38,6 +38,13 @@ module execute #(
     output logic        pc_write_en_o,
     output logic done_o,
 
+    // Host mailbox interface
+    input  logic [DATA_WIDTH-1:0] mailbox_data_i,
+    input  logic                  mailbox_valid_i,
+    output logic                  mailbox_ack_o,
+    output logic [DATA_WIDTH-1:0] mailbox_out_o,
+    output logic                  mailbox_out_valid_o,
+
     input  wire         instr_valid_i,
     output wire         instr_accept_o
 );
@@ -145,7 +152,8 @@ module execute #(
     EXEC_START_DST,
     EXEC_DST_STACK_WAIT,
     EXEC_DST_BARRIER_WAIT,
-    EXEC_DST_CALL_WAIT
+    EXEC_DST_CALL_WAIT,
+    EXEC_SRC_MAILBOX_WAIT
   } ExecState;
   ExecState exec_state;
   logic [DATA_WIDTH-1:0] src_value;
@@ -198,6 +206,10 @@ module execute #(
 
       heap_ptr <= {VAL_WIDTH{1'b0}};
 
+      mailbox_ack_o <= 1'b0;
+      mailbox_out_o <= {DATA_WIDTH{1'b0}};
+      mailbox_out_valid_o <= 1'b0;
+
       src_byte_offset <= 2'b0;
       src_is_byte <= 1'b0;
       src_stack_tag_mode <= 2'b0;
@@ -238,6 +250,8 @@ module execute #(
           resolved_src = {DATA_WIDTH{1'b0}};
           done_o <= 1'b0;
           pc_write_en_o <= 1'b0;
+          mailbox_ack_o <= 1'b0;
+          mailbox_out_valid_o <= 1'b0;
           for (ii = 0; ii < NUM_REGISTERS; ii = ii + 1) begin
             reg_unit_select[ii] <= 1'b0;
             reg_unit_write[ii] <= 1'b0;
@@ -398,6 +412,11 @@ module execute #(
               src_stack_tag_mode <= 2'b10;
               exec_state <= EXEC_SRC_STACK_WAIT;
             end
+            UNIT_MAILBOX: begin
+              // Block until host writes to mailbox
+              mailbox_ack_o <= 1'b0;
+              exec_state <= EXEC_SRC_MAILBOX_WAIT;
+            end
             UNIT_ALLOC_PTR: begin
               // Return {si[3:0] as tag, heap_ptr} — tagged pointer to next alloc
               resolved_src = {src_immediate_i[TAG_WIDTH-1:0], heap_ptr};
@@ -516,6 +535,13 @@ module execute #(
                 stack_push <= 1'b1;
                 stack_wait_armed <= 1'b0;
                 exec_state <= EXEC_DST_CALL_WAIT;
+              end
+              UNIT_MAILBOX: begin
+                // Write value to host-readable mailbox output
+                mailbox_out_o <= resolved_src;
+                mailbox_out_valid_o <= 1'b1;
+                done_o <= 1'b1;
+                exec_state <= EXEC_START_SRC;
               end
               UNIT_NONE: begin
                 done_o <= 1'b1;
@@ -714,6 +740,12 @@ module execute #(
               stack_wait_armed <= 1'b0;
               exec_state <= EXEC_DST_CALL_WAIT;
             end
+            UNIT_MAILBOX: begin
+              mailbox_out_o <= src_value;
+              mailbox_out_valid_o <= 1'b1;
+              done_o <= 1'b1;
+              exec_state <= EXEC_START_SRC;
+            end
             default: begin
               done_o <= 1'b1;
               exec_state <= EXEC_START_SRC;
@@ -742,6 +774,14 @@ module execute #(
             stack_wait_armed <= 1'b0;
             done_o <= 1'b1;
             exec_state <= EXEC_START_SRC;
+          end
+        end
+        EXEC_SRC_MAILBOX_WAIT: begin
+          // Block until host writes to mailbox.
+          if (mailbox_valid_i) begin
+            src_value <= mailbox_data_i;
+            mailbox_ack_o <= 1'b1;
+            exec_state <= EXEC_START_DST;
           end
         end
         EXEC_DST_CALL_WAIT: begin

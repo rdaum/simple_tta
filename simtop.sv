@@ -71,7 +71,12 @@ module simtop (
         .data_valid_o(dbs_valid),
         .data_instr_o(),
         .data_ready_i(sram_ready_i),
-        .data_read_data_i(sram_data_i)
+        .data_read_data_i(sram_data_i),
+        .mailbox_data_i({DATA_WIDTH{1'b0}}),
+        .mailbox_valid_i(1'b0),
+        .mailbox_ack_o(),
+        .mailbox_out_o(),
+        .mailbox_out_valid_o()
     );
 
 endmodule

@@ -127,6 +127,8 @@ fn run_lisp(source: &str, cycles: u32) -> TtaTestHelper {
     tta.data_ready_i = 0;
     tta.instr_data_read_i = 0;
     tta.data_data_read_i = 0;
+    tta.mailbox_valid_i = 0;
+    tta.mailbox_data_i = 0;
 
     let code = compile_with_result_store(source);
     helper.load_instructions(&code, 0);

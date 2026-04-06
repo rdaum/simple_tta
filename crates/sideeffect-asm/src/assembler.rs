@@ -62,6 +62,7 @@ pub enum Unit {
     UNIT_ALLOC = 25,            // dest only: store value at heap_ptr, heap_ptr++
     UNIT_ALLOC_PTR = 26,        // src only: read {si[3:0] as tag, heap_ptr}
     UNIT_CALL = 27,             // dest only: push return addr to stack 1, jump to value
+    UNIT_MAILBOX = 28,          // src: block until host writes; dst: write to host
 }
 
 impl Unit {
@@ -443,6 +444,20 @@ impl Instr {
     /// Set destination to CALL: push return address to stack 1, jump to src value.
     pub fn dst_call(mut self) -> Self {
         self.dst_unit = Unit::UNIT_CALL;
+        self
+    }
+
+    // --- Mailbox helpers ---
+
+    /// Set source to MAILBOX: blocks until host writes a value.
+    pub fn src_mailbox(mut self) -> Self {
+        self.src_unit = Unit::UNIT_MAILBOX;
+        self
+    }
+
+    /// Set destination to MAILBOX: write value to host-readable output.
+    pub fn dst_mailbox(mut self) -> Self {
+        self.dst_unit = Unit::UNIT_MAILBOX;
         self
     }
 }

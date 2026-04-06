@@ -75,7 +75,8 @@ typedef enum bit[4:0] {
     UNIT_TAG_CMP          = 24,  // Dest only: set cond = (src tag == imm[3:0])
     UNIT_ALLOC            = 25,  // Dest only: store value at heap_ptr, heap_ptr++
     UNIT_ALLOC_PTR        = 26,  // Src only: read {si[3:0] as tag, heap_ptr} (tagged pointer)
-    UNIT_CALL             = 27   // Dest only: push return addr to stack 1, jump to value
+    UNIT_CALL             = 27,  // Dest only: push return addr to stack 1, jump to value
+    UNIT_MAILBOX          = 28   // Src: block until host writes (handshake); Dst: write to host
 } Unit;
 
 // Predicate flag bit positions within the 6-bit flags field.

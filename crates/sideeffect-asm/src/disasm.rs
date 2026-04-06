@@ -30,6 +30,7 @@ fn unit_name(u: u8) -> &'static str {
         25 => "alloc",
         26 => "alloc_ptr",
         27 => "call",
+        28 => "mailbox",
         _ => "???",
     }
 }
@@ -112,6 +113,7 @@ fn fmt_src(src: u8, si: u8, operand: Option<u32>) -> String {
         22 => format!("peek.val[{}, #{}]", si & 0x7, (si >> 3) & 0x1F),
         23 => format!("peek.tag[{}, #{}]", si & 0x7, (si >> 3) & 0x1F),
         26 => format!("alloc_ptr<{}>", si & 0xF),
+        28 => "mailbox".into(),
         _ => format!("{}[{}]", unit_name(src), si),
     }
 }
@@ -154,6 +156,7 @@ fn fmt_dst(dst: u8, di: u8, operand: Option<u32>) -> String {
         24 => format!("tag_cmp[{}]", di & 0xF),
         25 => "alloc".into(),
         27 => "call".into(),
+        28 => "mailbox".into(),
         _ => format!("{}[{}]", unit_name(dst), di),
     }
 }
