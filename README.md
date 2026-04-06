@@ -48,9 +48,10 @@ The project now uses Rust with the Marlin library for simulation:
 
   * `cargo test` runs the full test suite including integration tests
     and property-based tests
-  * `cargo run` starts a basic simulator
-  * The old C++/cmake simulator is still present in simulator/ but no
-    longer maintained
+  * `cargo run -- --cycles 200` runs the Marlin-backed `simtop`
+    wrapper with boot ROM and external SRAM modeling
+  * `cargo run -- --trace-file simtop.vcd` writes a VCD trace for
+    debugging
   * A simple fusesoc core file is present for FPGA synthesis
   
 ### But this sucks, because <XXXX>?

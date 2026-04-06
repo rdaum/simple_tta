@@ -25,18 +25,22 @@ module simtop (
     );
 
     bus_if data_bus();
+    wire instr_done_unused;
     always_comb begin
         data_bus.read_data = sram_data_i;
         data_bus.ready = sram_ready_i;
         sram_data_o = data_bus.write_data;
         sram_valid_o = data_bus.valid;
         sram_wstrb_o = data_bus.wstrb;
-        sram_addr_o = data_bus.addr;
+        sram_addr_o = data_bus.addr[18:0];
     end
+
+    assign uart_txd_o = uart_rxd_i;
 
     tta tta(
         .rst_i(rst_i),
         .clk_i(sysclk_i),
+        .instr_done_o(instr_done_unused),
         .instr_bus(bootmem_bus),
         .data_bus(data_bus)
     );

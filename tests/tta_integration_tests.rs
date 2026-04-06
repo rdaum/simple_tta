@@ -1000,7 +1000,7 @@ mod tests {
         helper.reset(&mut tta);
         tta.rst_i = 0;
 
-        let cycles = helper.run_for_cycles(&mut tta, 50);
+        helper.run_for_cycles(&mut tta, 50);
         let basic_result = *helper.data_memory.get(&300).unwrap_or(&0);
         println!("Basic push/peek result: {}", basic_result);
 
