@@ -1,7 +1,7 @@
 use marlin::verilator::{VerilatedModelConfig, VerilatorRuntime};
 use std::collections::HashMap;
 
-use tta_sim::{create_tta_runtime, instr, TtaTestbench, Unit};
+use tta_sim::{create_tta_runtime, instr, AccessWidth, TtaTestbench, Unit};
 
 fn create_runtime() -> Result<VerilatorRuntime, Box<dyn std::error::Error>> {
     Ok(create_tta_runtime()?)
@@ -44,9 +44,18 @@ impl TtaTestHelper {
         // Handle memory interface for data bus
         if tta.data_valid_o != 0 {
             let addr = tta.data_addr_o;
-            if tta.data_wstrb_o != 0 {
-                // Write operation
-                self.data_memory.insert(addr, tta.data_data_write_o);
+            let wstrb = tta.data_wstrb_o as u8;
+            if wstrb != 0 {
+                // Write operation with per-byte strobes
+                let existing = *self.data_memory.get(&addr).unwrap_or(&0);
+                let mut bytes = existing.to_le_bytes();
+                let write_bytes = tta.data_data_write_o.to_le_bytes();
+                for i in 0..4 {
+                    if (wstrb & (1 << i)) != 0 {
+                        bytes[i] = write_bytes[i];
+                    }
+                }
+                self.data_memory.insert(addr, u32::from_le_bytes(bytes));
             } else {
                 // Read operation
                 tta.data_data_read_i = *self.data_memory.get(&addr).unwrap_or(&0);
@@ -1489,6 +1498,221 @@ mod tests {
         assert_eq!(
             result, 42,
             "Stack push/pop cycle should return the original value"
+        );
+
+        Ok(())
+    }
+
+    // --- Sub-word memory access tests ---
+
+    #[test]
+    fn test_byte_write_and_read_via_operand() -> Result<(), Box<dyn std::error::Error>> {
+        let runtime = create_runtime()?;
+        let mut tta = runtime
+            .create_model_simple::<TtaTestbench>()
+            .map_err(|e| format!("Failed to create model: {:?}", e))?;
+        let mut helper = TtaTestHelper::new();
+
+        tta.rst_i = 1;
+        tta.clk_i = 0;
+        tta.instr_ready_i = 1;
+        tta.data_ready_i = 1;
+        tta.instr_data_read_i = 0;
+        tta.data_data_read_i = 0;
+
+        // Pre-fill memory word at address 10 with 0xDEADBEEF
+        helper.set_data_memory(10, 0xDEADBEEF);
+
+        // Write byte 0xAB to byte offset 1 of word address 10
+        // Then read byte at offset 1 back to register and store to memory 20
+        let program = vec![
+            // Load 0xAB into register 0
+            instr()
+                .src(Unit::UNIT_ABS_IMMEDIATE)
+                .si(0xAB)
+                .dst(Unit::UNIT_REGISTER)
+                .di(0),
+            // Store register 0 as byte to mem_operand addr 10, byte offset 1
+            instr()
+                .src(Unit::UNIT_REGISTER)
+                .si(0)
+                .dst_mem_op(10, AccessWidth::Byte, 1),
+            // Read byte from mem_operand addr 10, byte offset 1 to register 1
+            instr()
+                .src_mem_op(10, AccessWidth::Byte, 1)
+                .dst(Unit::UNIT_REGISTER)
+                .di(1),
+            // Store register 1 (should be 0xAB) to memory 20 for verification
+            instr()
+                .src(Unit::UNIT_REGISTER)
+                .si(1)
+                .dst(Unit::UNIT_MEMORY_IMMEDIATE)
+                .di(20),
+            // Also read the full word at address 10 to verify only byte 1 changed
+            instr()
+                .src_mem_op(10, AccessWidth::Word, 0)
+                .dst(Unit::UNIT_REGISTER)
+                .di(2),
+            instr()
+                .src(Unit::UNIT_REGISTER)
+                .si(2)
+                .dst(Unit::UNIT_MEMORY_IMMEDIATE)
+                .di(21),
+        ];
+
+        let mut machine_code = Vec::new();
+        for i in program {
+            machine_code.extend(i.assemble());
+        }
+        helper.load_instructions(&machine_code, 0);
+        helper.run_until_reset_released(&mut tta)?;
+        helper.run_for_cycles(&mut tta, 200);
+
+        let byte_result = helper.get_data_memory(20);
+        let word_result = helper.get_data_memory(21);
+
+        assert_eq!(
+            byte_result, 0xAB,
+            "Byte read at offset 1 should return 0xAB (zero-extended)"
+        );
+        assert_eq!(
+            word_result, 0xDEADABEF,
+            "Full word should have only byte 1 changed from 0xBE to 0xAB"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_halfword_write_and_read_via_operand() -> Result<(), Box<dyn std::error::Error>> {
+        let runtime = create_runtime()?;
+        let mut tta = runtime
+            .create_model_simple::<TtaTestbench>()
+            .map_err(|e| format!("Failed to create model: {:?}", e))?;
+        let mut helper = TtaTestHelper::new();
+
+        tta.rst_i = 1;
+        tta.clk_i = 0;
+        tta.instr_ready_i = 1;
+        tta.data_ready_i = 1;
+        tta.instr_data_read_i = 0;
+        tta.data_data_read_i = 0;
+
+        // Pre-fill memory word at address 10 with 0xDEADBEEF
+        helper.set_data_memory(10, 0xDEADBEEF);
+
+        // Write halfword 0x1234 to upper half (byte offset 2) of word address 10
+        // Then read it back
+        let program = vec![
+            // Load 0x1234 into register 0 via 32-bit operand
+            instr()
+                .src(Unit::UNIT_ABS_OPERAND)
+                .soperand(0x1234)
+                .dst(Unit::UNIT_REGISTER)
+                .di(0),
+            // Store register 0 as halfword to addr 10, byte offset 2 (upper half)
+            instr()
+                .src(Unit::UNIT_REGISTER)
+                .si(0)
+                .dst_mem_op(10, AccessWidth::HalfWord, 2),
+            // Read halfword from addr 10, byte offset 2 to register 1
+            instr()
+                .src_mem_op(10, AccessWidth::HalfWord, 2)
+                .dst(Unit::UNIT_REGISTER)
+                .di(1),
+            // Store register 1 to memory 20
+            instr()
+                .src(Unit::UNIT_REGISTER)
+                .si(1)
+                .dst(Unit::UNIT_MEMORY_IMMEDIATE)
+                .di(20),
+            // Read full word at address 10 to check lower half preserved
+            instr()
+                .src_mem_op(10, AccessWidth::Word, 0)
+                .dst(Unit::UNIT_REGISTER)
+                .di(2),
+            instr()
+                .src(Unit::UNIT_REGISTER)
+                .si(2)
+                .dst(Unit::UNIT_MEMORY_IMMEDIATE)
+                .di(21),
+        ];
+
+        let mut machine_code = Vec::new();
+        for i in program {
+            machine_code.extend(i.assemble());
+        }
+        helper.load_instructions(&machine_code, 0);
+        helper.run_until_reset_released(&mut tta)?;
+        helper.run_for_cycles(&mut tta, 200);
+
+        let half_result = helper.get_data_memory(20);
+        let word_result = helper.get_data_memory(21);
+
+        assert_eq!(
+            half_result, 0x1234,
+            "Halfword read at offset 2 should return 0x1234 (zero-extended)"
+        );
+        assert_eq!(
+            word_result, 0x1234BEEF,
+            "Full word should have upper half changed to 0x1234, lower half preserved"
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_byte_read_via_register_pointer() -> Result<(), Box<dyn std::error::Error>> {
+        let runtime = create_runtime()?;
+        let mut tta = runtime
+            .create_model_simple::<TtaTestbench>()
+            .map_err(|e| format!("Failed to create model: {:?}", e))?;
+        let mut helper = TtaTestHelper::new();
+
+        tta.rst_i = 1;
+        tta.clk_i = 0;
+        tta.instr_ready_i = 1;
+        tta.data_ready_i = 1;
+        tta.instr_data_read_i = 0;
+        tta.data_data_read_i = 0;
+
+        // Pre-fill memory word at address 42 with 0x44332211
+        helper.set_data_memory(42, 0x44332211);
+
+        // Load address 42 into register 0, then read byte 2 via register pointer
+        let program = vec![
+            // Load address 42 into register 0
+            instr()
+                .src(Unit::UNIT_ABS_IMMEDIATE)
+                .si(42)
+                .dst(Unit::UNIT_REGISTER)
+                .di(0),
+            // Read byte at offset 2 from address in register 0
+            instr()
+                .src_reg_ptr(0, AccessWidth::Byte, 2)
+                .dst(Unit::UNIT_REGISTER)
+                .di(1),
+            // Store to memory for verification
+            instr()
+                .src(Unit::UNIT_REGISTER)
+                .si(1)
+                .dst(Unit::UNIT_MEMORY_IMMEDIATE)
+                .di(100),
+        ];
+
+        let mut machine_code = Vec::new();
+        for i in program {
+            machine_code.extend(i.assemble());
+        }
+        helper.load_instructions(&machine_code, 0);
+        helper.run_until_reset_released(&mut tta)?;
+        helper.run_for_cycles(&mut tta, 200);
+
+        let result = helper.get_data_memory(100);
+
+        assert_eq!(
+            result, 0x33,
+            "Byte at offset 2 of 0x44332211 should be 0x33"
         );
 
         Ok(())

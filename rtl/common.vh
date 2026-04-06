@@ -56,4 +56,22 @@ typedef enum bit[3:0] {
     UNIT_REGISTER_POINTER = 13   // Memory at address held in register N (imm[4:0])
 } Unit;
 
+// Access width selector, carried in immediate bits [11:10] of MEMORY_OPERAND
+// and REGISTER_POINTER instructions. MEMORY_IMMEDIATE always performs
+// full-word access (the full 12-bit immediate is used as a word address).
+//
+// For MEMORY_OPERAND and REGISTER_POINTER the 12-bit immediate is:
+//   [11:10] — access width (AccessWidth enum below)
+//   [9:8]   — byte offset within the 32-bit word (0-3 for byte, 0/2 for half)
+//   [7:0]   — unused for MEMORY_OPERAND; [4:0] = register index for REG_PTR
+//
+// On writes, the width + offset select which byte lanes are strobed.
+// On reads, the selected bytes are zero-extended to 32 bits.
+typedef enum bit [1:0] {
+    ACCESS_WORD     = 2'b00,  // Full 32-bit word (offset ignored, wstrb = 4'b1111)
+    ACCESS_BYTE     = 2'b01,  // Single byte (offset selects lane 0-3)
+    ACCESS_HALFWORD = 2'b10,  // 16-bit halfword (offset 0 = lanes 1:0, offset 2 = lanes 3:2)
+    ACCESS_RESERVED = 2'b11   // Reserved for future use
+} AccessWidth;
+
 `endif  // common_vh_

@@ -80,11 +80,35 @@ B ignored), `AND`, `OR`, `XOR`, `GT`, `LT`
 
 Comparisons (`EQL`, `GT`, `LT`) produce 0 or 1.
 
+### Sub-word memory access
+
+`MEMORY_OPERAND` and `REGISTER_POINTER` support byte and halfword
+loads/stores. The 12-bit immediate field encodes the access width
+and byte offset:
+
+```
+ 11  10  9   8  7          0
++------+------+------------+
+|width | offs | addr / reg |
++------+------+------------+
+  2 b    2 b      8 b
+```
+
+  * `width`: 00 = word (32-bit), 01 = byte, 10 = halfword
+  * `offs`: byte offset within the 32-bit word (0-3 for byte,
+    0 or 2 for halfword)
+
+On writes, only the selected byte lane(s) are strobed. On reads,
+the selected bytes are zero-extended to 32 bits. This adds no
+extra clock cycles — the lane selection is pure combinational
+logic in the existing data path.
+
+`MEMORY_IMMEDIATE` always performs full-word access (the full
+12-bit immediate is used as a word address).
+
 ### What can't it do yet?
 
   * I'd like to add support for interrupts.
-  * I'd like to add read/writes of bytewise. For now have to use
-    bitmasking via an ALU for this.
   * Who knows? I aim for exotic fun.
 
 ### Building, running

@@ -46,6 +46,56 @@ impl Unit {
     fn needs_operand(self) -> bool {
         matches!(self, Unit::UNIT_MEMORY_OPERAND | Unit::UNIT_ABS_OPERAND)
     }
+
+}
+
+/// Access width for sub-word memory operations.
+///
+/// Encoded in immediate bits [11:10]. Bits [9:8] carry the byte offset
+/// within the 32-bit word (0-3 for byte, 0 or 2 for halfword).
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[repr(u8)]
+pub enum AccessWidth {
+    /// Full 32-bit word (default, byte offset ignored)
+    Word = 0b00,
+    /// Single byte, zero-extended on read
+    Byte = 0b01,
+    /// 16-bit halfword, zero-extended on read
+    HalfWord = 0b10,
+}
+
+/// Encode access width and byte offset into the upper bits of a 12-bit
+/// immediate field.
+///
+/// For ACCESS_WORD: the full 12 bits are the address/register (backward
+/// compatible — byte offset is ignored).
+///
+/// For ACCESS_BYTE / ACCESS_HALFWORD:
+///   [11:10] = width, [9:8] = byte offset, [7:0] = address or register.
+fn encode_mem_immediate(addr_or_reg: u16, width: AccessWidth, byte_offset: u8) -> u16 {
+    if width == AccessWidth::Word {
+        // Full 12-bit field used as address/register, no sub-word encoding.
+        assert!(
+            addr_or_reg < (1 << 12),
+            "Word-mode address must fit in 12 bits"
+        );
+        return addr_or_reg;
+    }
+    assert!(byte_offset < 4, "Byte offset must be 0-3");
+    if width == AccessWidth::HalfWord {
+        assert!(
+            byte_offset == 0 || byte_offset == 2,
+            "Halfword offset must be 0 or 2"
+        );
+    }
+    assert!(
+        addr_or_reg < 256,
+        "Sub-word memory-immediate address must fit in 8 bits"
+    );
+    let base = addr_or_reg & 0xFF; // bits [7:0]
+    let off = (byte_offset as u16 & 0x3) << 8; // bits [9:8]
+    let w = (width as u16 & 0x3) << 10; // bits [11:10]
+    base | off | w
 }
 
 #[derive(Debug, Clone)]
@@ -204,6 +254,48 @@ impl Instr {
         self.si = (stack_id as u16) | ((offset as u16) << 3);
         self.dst_unit = Unit::UNIT_REGISTER;
         self.di = dst_reg;
+        self
+    }
+
+    // --- Sub-word memory access helpers ---
+    //
+    // Sub-word (byte/halfword) access is supported on MEMORY_OPERAND and
+    // REGISTER_POINTER only. MEMORY_IMMEDIATE always performs full-word
+    // access because it uses the full 12-bit immediate as a word address.
+
+    /// Set the source to a memory-operand load (32-bit address) with the
+    /// given access width and byte offset within the word.
+    pub fn src_mem_op(mut self, addr: u32, width: AccessWidth, byte_offset: u8) -> Self {
+        self.src_unit = Unit::UNIT_MEMORY_OPERAND;
+        self.si = encode_mem_immediate(0, width, byte_offset);
+        self.soperand = Some(addr);
+        self
+    }
+
+    /// Set the destination to a memory-operand store (32-bit address) with
+    /// the given access width and byte offset within the word.
+    pub fn dst_mem_op(mut self, addr: u32, width: AccessWidth, byte_offset: u8) -> Self {
+        self.dst_unit = Unit::UNIT_MEMORY_OPERAND;
+        self.di = encode_mem_immediate(0, width, byte_offset);
+        self.doperand = Some(addr);
+        self
+    }
+
+    /// Set the source to a register-pointer load with the given access width
+    /// and byte offset within the word.
+    pub fn src_reg_ptr(mut self, reg: u16, width: AccessWidth, byte_offset: u8) -> Self {
+        assert!(reg < 32, "Register index must be 0-31");
+        self.src_unit = Unit::UNIT_REGISTER_POINTER;
+        self.si = encode_mem_immediate(reg, width, byte_offset);
+        self
+    }
+
+    /// Set the destination to a register-pointer store with the given access
+    /// width and byte offset within the word.
+    pub fn dst_reg_ptr(mut self, reg: u16, width: AccessWidth, byte_offset: u8) -> Self {
+        assert!(reg < 32, "Register index must be 0-31");
+        self.dst_unit = Unit::UNIT_REGISTER_POINTER;
+        self.di = encode_mem_immediate(reg, width, byte_offset);
         self
     }
 

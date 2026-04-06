@@ -101,6 +101,49 @@ module execute (
   ExecState exec_state;
   logic [31:0] src_value;
 
+  // Sub-word access helpers: extract width and byte offset from immediate fields.
+  // Only applicable for MEMORY_OPERAND and REGISTER_POINTER where the
+  // immediate field is not used as the primary address. MEMORY_IMMEDIATE
+  // always uses the full 12-bit immediate as an address (word access only).
+  AccessWidth src_width, dst_width;
+  logic [1:0] src_byte_offset, dst_byte_offset;
+  always_comb begin
+    if (src_unit_i == UNIT_MEMORY_IMMEDIATE) begin
+      src_width       = ACCESS_WORD;
+      src_byte_offset = 2'b00;
+    end else begin
+      src_width       = AccessWidth'(src_immediate_i[11:10]);
+      src_byte_offset = src_immediate_i[9:8];
+    end
+    if (dst_unit_i == UNIT_MEMORY_IMMEDIATE) begin
+      dst_width       = ACCESS_WORD;
+      dst_byte_offset = 2'b00;
+    end else begin
+      dst_width       = AccessWidth'(dst_immediate_i[11:10]);
+      dst_byte_offset = dst_immediate_i[9:8];
+    end
+  end
+
+  // Compute write strobes from access width and byte offset.
+  function automatic logic [3:0] width_to_wstrb(AccessWidth w, logic [1:0] off);
+    case (w)
+      ACCESS_BYTE:     return 4'b0001 << off;
+      ACCESS_HALFWORD: return 4'b0011 << off;
+      default:         return 4'b1111;  // ACCESS_WORD / reserved
+    endcase
+  endfunction
+
+  // Extract and zero-extend sub-word data from a 32-bit bus read.
+  function automatic logic [31:0] extract_read(logic [31:0] data, AccessWidth w, logic [1:0] off);
+    logic [31:0] shifted;
+    shifted = data >> (off * 8);
+    case (w)
+      ACCESS_BYTE:     return {24'b0, shifted[7:0]};
+      ACCESS_HALFWORD: return {16'b0, shifted[15:0]};
+      default:         return data;  // ACCESS_WORD
+    endcase
+  endfunction
+
   always @(posedge clk_i) begin
     if (rst_i) begin
       reg_unit_select = '{default: 1'b0};
@@ -137,6 +180,10 @@ module execute (
           stack_index_write = 1'b0;
           case (src_unit_i) inside
             // Source is memory-backed, so begin a bus read.
+            // Width (imm[11:10]) and byte offset (imm[9:8]) are applied
+            // when the data returns in EXEC_SRC_MEM_RETRIEVE. These fields
+            // are only active for MEMORY_OPERAND and REGISTER_POINTER;
+            // MEMORY_IMMEDIATE always does a full-word read.
             UNIT_MEMORY_OPERAND, UNIT_MEMORY_IMMEDIATE, UNIT_REGISTER_POINTER: begin
               case (src_unit_i)
                 UNIT_MEMORY_OPERAND: data_bus.addr = src_operand_i;
@@ -208,7 +255,8 @@ module execute (
         end
         EXEC_SRC_MEM_RETRIEVE: begin
           if (data_bus.ready) begin
-            src_value = data_bus.read_data;
+            // Extract the requested byte/halfword/word and zero-extend.
+            src_value = extract_read(data_bus.read_data, src_width, src_byte_offset);
             data_bus.valid = 1'b0;
             exec_state = EXEC_START_DST;
           end
@@ -265,22 +313,27 @@ module execute (
                 exec_state = EXEC_START_SRC;
               end
             end
-            UNIT_MEMORY_OPERAND, UNIT_MEMORY_IMMEDIATE: begin
+            UNIT_MEMORY_OPERAND, UNIT_MEMORY_IMMEDIATE, UNIT_REGISTER_POINTER: begin
               case (dst_unit_i)
                 UNIT_MEMORY_OPERAND: data_bus.addr = dst_operand_i;
                 UNIT_MEMORY_IMMEDIATE: data_bus.addr = {20'b0, dst_immediate_i};
                 UNIT_REGISTER_POINTER: begin
-                  reg_unit_select[src_immediate_i[4:0]] = 1'b1;
-                  data_bus.addr = reg_out_data[src_immediate_i[4:0]];
+                  reg_unit_select[dst_immediate_i[4:0]] = 1'b1;
+                  data_bus.addr = reg_out_data[dst_immediate_i[4:0]];
                 end
                 default: data_bus.addr = 32'b0;
               endcase
 
-
               data_bus.valid = 1'b1;
-              data_bus.write_data = src_value;
-              // Only full-word writes are currently implemented.
-              data_bus.wstrb = 4'b1111;
+              // For sub-word writes, shift data into the correct byte lane(s).
+              // Word writes pass data and strobes through unchanged.
+              if (dst_width == ACCESS_WORD) begin
+                data_bus.write_data = src_value;
+                data_bus.wstrb = 4'b1111;
+              end else begin
+                data_bus.write_data = src_value << (dst_byte_offset * 8);
+                data_bus.wstrb = width_to_wstrb(dst_width, dst_byte_offset);
+              end
               begin
                 done_o = 1'b1;
                 exec_state = EXEC_START_SRC;

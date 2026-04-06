@@ -43,9 +43,18 @@ impl TtaPropertyHelper {
         // Handle memory interface for data bus
         if tta.data_valid_o != 0 {
             let addr = tta.data_addr_o;
-            if tta.data_wstrb_o != 0 {
-                // Write operation
-                self.data_memory.insert(addr, tta.data_data_write_o);
+            let wstrb = tta.data_wstrb_o as u8;
+            if wstrb != 0 {
+                // Write operation with per-byte strobes
+                let existing = *self.data_memory.get(&addr).unwrap_or(&0);
+                let mut bytes = existing.to_le_bytes();
+                let write_bytes = tta.data_data_write_o.to_le_bytes();
+                for i in 0..4 {
+                    if (wstrb & (1 << i)) != 0 {
+                        bytes[i] = write_bytes[i];
+                    }
+                }
+                self.data_memory.insert(addr, u32::from_le_bytes(bytes));
             } else {
                 // Read operation
                 tta.data_data_read_i = *self.data_memory.get(&addr).unwrap_or(&0);
