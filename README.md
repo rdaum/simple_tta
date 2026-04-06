@@ -22,12 +22,14 @@ and data buses, and 8 integer ALUs, and simple instructions for:
   * Setting and reading the program counter.
   
 The instruction set is very simple and is best understood by reading
-the assembler implementation in tests/assembler.rs
+the assembler implementation in src/assembler.rs
 
   * All instructions have a source unit (ALU, register, memory, or
     program counter), and a destination unit (same).
   * Each instruction can take a 12-bit immediate value, or when it
     makes sense, a 32-bit operand which follows in the program stream.
+  * The current implementation also supports simple stack push, pop,
+    peek, and poke operations.
 
 Unlike a normal instruction set it is the responsibility of the
 program author to be aware of which ALUs, etc. are currently being
@@ -36,8 +38,6 @@ used, and schedule accordingly.
 ### What can't it do yet?
 
   * I'd like to add support for interrupts.
-  * I intend on adding a LIFO stack. I would like this to be useful
-    for writing virtual machines.
   * I'd like to add read/writes of bytewise. For now have to use
     bitmasking via an ALU for this.
   * Who knows? I aim for exotic fun.
