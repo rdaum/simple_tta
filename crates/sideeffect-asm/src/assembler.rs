@@ -59,6 +59,9 @@ pub enum Unit {
     UNIT_STACK_PEEK_VALUE = 22, // peek with VALUE mode (tag bits zeroed)
     UNIT_STACK_PEEK_TAG = 23,   // peek with TAG mode (tag bits only)
     UNIT_TAG_CMP = 24,          // dest only: set cond = (src tag == imm[3:0])
+    UNIT_ALLOC = 25,            // dest only: store value at heap_ptr, heap_ptr++
+    UNIT_ALLOC_PTR = 26,        // src only: read {si[3:0] as tag, heap_ptr}
+    UNIT_CALL = 27,             // dest only: push return addr to stack 1, jump to value
 }
 
 impl Unit {
@@ -415,6 +418,31 @@ impl Instr {
         assert!(expected_tag < 16, "Tag must be 0-15");
         self.dst_unit = Unit::UNIT_TAG_CMP;
         self.di = expected_tag;
+        self
+    }
+
+    // --- Allocation helpers ---
+
+    /// Set destination to ALLOC: store value at heap_ptr, then heap_ptr++.
+    pub fn dst_alloc(mut self) -> Self {
+        self.dst_unit = Unit::UNIT_ALLOC;
+        self
+    }
+
+    /// Set source to ALLOC_PTR: read current heap_ptr with the given tag.
+    /// Returns a tagged pointer: {tag[3:0], heap_ptr}.
+    pub fn src_alloc_ptr(mut self, tag: u8) -> Self {
+        assert!(tag < 16, "Tag must be 0-15");
+        self.src_unit = Unit::UNIT_ALLOC_PTR;
+        self.si = tag;
+        self
+    }
+
+    // --- Call/return helpers ---
+
+    /// Set destination to CALL: push return address to stack 1, jump to src value.
+    pub fn dst_call(mut self) -> Self {
+        self.dst_unit = Unit::UNIT_CALL;
         self
     }
 }

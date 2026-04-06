@@ -145,7 +145,8 @@ module sequencer (
 
   function automatic is_control_flow;
     input [31:0] raw_op;
-    is_control_flow = (raw_op[9:5] == UNIT_PC) || (raw_op[9:5] == UNIT_PC_COND);
+    is_control_flow = (raw_op[9:5] == UNIT_PC) || (raw_op[9:5] == UNIT_PC_COND)
+                   || (raw_op[9:5] == UNIT_CALL);
   endfunction
   /* verilator lint_on UNUSEDSIGNAL */
 

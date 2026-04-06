@@ -111,7 +111,10 @@ destination require an extended operand.
 | 22 | `STACK_PEEK_VALUE` | Peek with tag bits zeroed | -- |
 | 23 | `STACK_PEEK_TAG` | Peek with tag bits only | -- |
 | 24 | `TAG_CMP` | -- | Set cond = (src tag == imm[3:0]) |
-| 25-31 | *free* | 7 slots for future units | |
+| 25 | `ALLOC` | -- | Store value at heap_ptr, heap_ptr++ |
+| 26 | `ALLOC_PTR` | Read {si[3:0] as tag, heap_ptr} | -- |
+| 27 | `CALL` | -- | Push return addr to stack 1, jump |
+| 28-31 | *free* | 4 slots for future units | |
 
 ### ALU operations
 
@@ -232,6 +235,46 @@ Combined with tagged registers (TAG mode for type checking,
 DEREF for pointer chasing), this provides the core primitives
 for hardware-assisted GC in e.g. a Lisp or Lua runtime.
 
+### Heap allocation (hardware cons)
+
+The `ALLOC` and `ALLOC_PTR` units provide a hardware bump
+allocator with an internal heap pointer register. This makes
+cons cell allocation a 3-instruction, 8-cycle operation:
+
+```
+alloc_ptr[CONS] → reg[0]    ; grab tagged pointer (tag=1, addr=HP)
+car_value → alloc            ; store car at HP, HP++
+cdr_value → alloc            ; store cdr at HP+1, HP++
+```
+
+`ALLOC_PTR` reads the current heap pointer and applies the
+tag from si[3:0], returning a ready-to-use tagged pointer.
+Subsequent `ALLOC` writes store values at successive addresses
+and bump the pointer. The pointer is captured *before* the
+writes, so the tag points to the first word of the allocated
+block.
+
+Without these units, the same operation requires 8 instructions
+and ~18 cycles (manual pointer arithmetic, temp registers, tag
+setting). The hardware allocator eliminates that bookkeeping.
+
+### Function call/return
+
+The `CALL` unit atomically pushes the return address to hardware
+stack 1 and jumps to the source value. Return is a standard
+`pop stack[1] → PC`.
+
+```
+operand(function) → call     ; push return addr, jump (~5 cycles)
+; ... function body ...
+pop stack[1] → PC            ; return (~5 cycles)
+```
+
+Nested calls work naturally — stack 1 is a LIFO call stack
+(32 entries deep by default). The return address pushed is
+`pc_i`, the address of the next sequential instruction after
+the call, which the sequencer already computes.
+
 ### Byte memory access
 
 The `MEM_BYTE` unit provides single-byte loads and stores using
@@ -292,7 +335,7 @@ so that `UNIT_PC` reads return the correct value regardless of
 how far ahead the fetch has progressed.
 
 **Fetch stall policy.** The sequencer will not fetch past a
-control-flow instruction (`PC` or `PC_COND` as destination). It
+control-flow instruction (`PC`, `PC_COND`, or `CALL` as destination). It
 stalls until execute accepts the branch, at which point either a
 flush occurs (taken) or sequential fetch resumes (not taken). This
 means the queue never contains wrong-path instructions —
@@ -359,6 +402,11 @@ warm (fetch latency hidden).
 | pop_tag → reg | 5 | Same as pop, tag mask applied |
 | reg → tag_cmp[N] | 2 | Compare tag, set cond, fused |
 | tag_cmp + predicated DEREF | 4 | Type check + car in 2 instructions |
+| value → alloc | 2 | Fire-and-forget write, bump heap_ptr |
+| alloc_ptr[tag] → reg | 2 | Tagged heap pointer, fused |
+| cons (alloc_ptr + 2× alloc) | 8 | 3 instructions: grab ptr, store car, store cdr |
+| operand → call | ~5 | Push return addr + stack handshake + jump |
+| pop stack[1] → PC (return) | ~5 | Stack pop + jump |
 | predicated skip | 1 | Condition doesn't match, no-op |
 
 The common case — register/immediate/ALU moves — is 2 cycles.
@@ -405,7 +453,7 @@ HDL sources live in `rtl/`, with top-level simulation wrappers
 
 ### Building, running
 
-* `cargo test` runs the full test suite (107 tests: unit,
+* `cargo test` runs the full test suite (114 tests: unit,
   integration, and property-based)
 * `cargo run -p sideeffect-sim -- --cycles 200` runs the Marlin-backed
   `simtop` wrapper with boot ROM and external SRAM modeling

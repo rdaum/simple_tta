@@ -132,6 +132,9 @@ module execute #(
       .barrier_overflow_o(barrier_overflow)
   );
 
+  // Heap pointer for ALLOC unit (32-bit word address).
+  logic [VAL_WIDTH-1:0] heap_ptr;
+
   // Execution FSM.
   typedef enum {
     EXEC_START_SRC,
@@ -141,7 +144,8 @@ module execute #(
     EXEC_SRC_MULDIV_WAIT,
     EXEC_START_DST,
     EXEC_DST_STACK_WAIT,
-    EXEC_DST_BARRIER_WAIT
+    EXEC_DST_BARRIER_WAIT,
+    EXEC_DST_CALL_WAIT
   } ExecState;
   ExecState exec_state;
   logic [DATA_WIDTH-1:0] src_value;
@@ -191,6 +195,8 @@ module execute #(
       muldiv_oper <= 4'h0;
       muldiv_a <= {DATA_WIDTH{1'b0}};
       muldiv_b <= {DATA_WIDTH{1'b0}};
+
+      heap_ptr <= {VAL_WIDTH{1'b0}};
 
       src_byte_offset <= 2'b0;
       src_is_byte <= 1'b0;
@@ -392,6 +398,12 @@ module execute #(
               src_stack_tag_mode <= 2'b10;
               exec_state <= EXEC_SRC_STACK_WAIT;
             end
+            UNIT_ALLOC_PTR: begin
+              // Return {si[3:0] as tag, heap_ptr} — tagged pointer to next alloc
+              resolved_src = {src_immediate_i[TAG_WIDTH-1:0], heap_ptr};
+              src_value <= resolved_src;
+              src_resolved = 1'b1;
+            end
             UNIT_NONE: begin
               resolved_src = {DATA_WIDTH{1'b0}};
               src_value <= resolved_src;
@@ -486,6 +498,24 @@ module execute #(
                 cond_reg <= (resolved_src[DATA_WIDTH-1:VAL_WIDTH] == dst_immediate_i[TAG_WIDTH-1:0]);
                 done_o <= 1'b1;
                 exec_state <= EXEC_START_SRC;
+              end
+              UNIT_ALLOC: begin
+                // Store value at heap_ptr, fire-and-forget write, bump HP
+                data_addr_o <= heap_ptr;
+                data_write_data_o <= resolved_src;
+                data_wstrb_o <= 4'b1111;
+                data_valid_o <= 1'b1;
+                heap_ptr <= heap_ptr + 1;
+                done_o <= 1'b1;
+                exec_state <= EXEC_START_SRC;
+              end
+              UNIT_CALL: begin
+                // Push return address (pc_i = next sequential PC) to stack 1, then jump
+                stack_select <= 3'd1;
+                stack_data_in <= `TAGGED_ZERO(pc_i);
+                stack_push <= 1'b1;
+                stack_wait_armed <= 1'b0;
+                exec_state <= EXEC_DST_CALL_WAIT;
               end
               UNIT_NONE: begin
                 done_o <= 1'b1;
@@ -668,6 +698,22 @@ module execute #(
               done_o <= 1'b1;
               exec_state <= EXEC_START_SRC;
             end
+            UNIT_ALLOC: begin
+              data_addr_o <= heap_ptr;
+              data_write_data_o <= src_value;
+              data_wstrb_o <= 4'b1111;
+              data_valid_o <= 1'b1;
+              heap_ptr <= heap_ptr + 1;
+              done_o <= 1'b1;
+              exec_state <= EXEC_START_SRC;
+            end
+            UNIT_CALL: begin
+              stack_select <= 3'd1;
+              stack_data_in <= `TAGGED_ZERO(pc_i);
+              stack_push <= 1'b1;
+              stack_wait_armed <= 1'b0;
+              exec_state <= EXEC_DST_CALL_WAIT;
+            end
             default: begin
               done_o <= 1'b1;
               exec_state <= EXEC_START_SRC;
@@ -694,6 +740,19 @@ module execute #(
             stack_wait_armed <= 1'b1;
           end else if (barrier_ready) begin
             stack_wait_armed <= 1'b0;
+            done_o <= 1'b1;
+            exec_state <= EXEC_START_SRC;
+          end
+        end
+        EXEC_DST_CALL_WAIT: begin
+          // Wait for stack push (return address) to complete, then jump.
+          stack_push <= 1'b0;
+          if (!stack_wait_armed) begin
+            stack_wait_armed <= 1'b1;
+          end else if (stack_ready) begin
+            stack_wait_armed <= 1'b0;
+            pc_write_o <= src_value[VAL_WIDTH-1:0];
+            pc_write_en_o <= 1'b1;
             done_o <= 1'b1;
             exec_state <= EXEC_START_SRC;
           end

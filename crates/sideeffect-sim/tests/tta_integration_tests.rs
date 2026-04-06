@@ -3341,4 +3341,240 @@ mod tests {
 
         Ok(())
     }
+
+    #[test]
+    fn test_alloc_basic() -> Result<(), Box<dyn std::error::Error>> {
+        // ALLOC stores values at heap_ptr and bumps it.
+        // Heap pointer starts at 0. Two ALLOC writes should store at addr 0 and 1.
+        let runtime = create_runtime()?;
+        let mut tta = runtime
+            .create_model_simple::<TtaTestbench>()
+            .map_err(|e| format!("Failed to create model: {:?}", e))?;
+        let mut helper = TtaTestHelper::new();
+
+        tta.rst_i = 1;
+        tta.clk_i = 0;
+        tta.instr_ready_i = 0;
+        tta.data_ready_i = 0;
+        tta.instr_data_read_i = 0;
+        tta.data_data_read_i = 0;
+
+        let program = vec![
+            // Store 0xAA at heap[0], bump HP to 1
+            instr().src(Unit::UNIT_ABS_IMMEDIATE).si(0xAA).dst(Unit::UNIT_ALLOC),
+            // Store 0xBB at heap[1], bump HP to 2
+            instr().src(Unit::UNIT_ABS_IMMEDIATE).si(0xBB).dst(Unit::UNIT_ALLOC),
+            // Read ALLOC_PTR (should be 2 now, with tag=0) into r0
+            instr().src(Unit::UNIT_ALLOC_PTR).si(0).dst(Unit::UNIT_REGISTER).di(0),
+            // Store r0 to mem[100] so we can check HP value
+            instr().src(Unit::UNIT_REGISTER).si(0).dst(Unit::UNIT_MEMORY_IMMEDIATE).di(100),
+        ];
+
+        let mut machine_code = Vec::new();
+        for i in &program {
+            machine_code.extend(i.assemble());
+        }
+        helper.load_instructions(&machine_code, 0);
+        helper.run_until_reset_released(&mut tta)?;
+        helper.run_for_cycles(&mut tta, 200);
+
+        assert_eq!(helper.get_data_memory(0) & 0xFFFF_FFFF, 0xAA, "heap[0] should be 0xAA");
+        assert_eq!(helper.get_data_memory(1) & 0xFFFF_FFFF, 0xBB, "heap[1] should be 0xBB");
+        assert_eq!(helper.get_data_memory(100) & 0xFFFF_FFFF, 2, "HP should be 2 after two allocs");
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_alloc_cons_cell() -> Result<(), Box<dyn std::error::Error>> {
+        // Allocate a cons cell: alloc_ptr[1] → r0, store car+cdr, then verify.
+        // Tag 1 = cons.
+        let runtime = create_runtime()?;
+        let mut tta = runtime
+            .create_model_simple::<TtaTestbench>()
+            .map_err(|e| format!("Failed to create model: {:?}", e))?;
+        let mut helper = TtaTestHelper::new();
+
+        tta.rst_i = 1;
+        tta.clk_i = 0;
+        tta.instr_ready_i = 0;
+        tta.data_ready_i = 0;
+        tta.instr_data_read_i = 0;
+        tta.data_data_read_i = 0;
+
+        let program = vec![
+            // Grab tagged cons pointer (tag=1, addr=0)
+            instr().src_alloc_ptr(1).dst_reg(0),
+            // Store car = 42
+            instr().src(Unit::UNIT_ABS_IMMEDIATE).si(42).dst(Unit::UNIT_ALLOC),
+            // Store cdr = 99
+            instr().src(Unit::UNIT_ABS_IMMEDIATE).si(99).dst(Unit::UNIT_ALLOC),
+            // Verify: DEREF r0 offset 0 (car) → r1
+            instr().src_deref(0, 0).dst_reg(1),
+            // DEREF r0 offset 1 (cdr) → r2
+            instr().src_deref(0, 1).dst_reg(2),
+            // Store r0 (tagged pointer) to mem[100]
+            instr().src_reg(0).dst(Unit::UNIT_MEMORY_IMMEDIATE).di(100),
+            // Store r1 (car) to mem[101]
+            instr().src_reg(1).dst(Unit::UNIT_MEMORY_IMMEDIATE).di(101),
+            // Store r2 (cdr) to mem[102]
+            instr().src_reg(2).dst(Unit::UNIT_MEMORY_IMMEDIATE).di(102),
+        ];
+
+        let mut machine_code = Vec::new();
+        for i in &program {
+            machine_code.extend(i.assemble());
+        }
+        helper.load_instructions(&machine_code, 0);
+        helper.run_until_reset_released(&mut tta)?;
+        helper.run_for_cycles(&mut tta, 200);
+
+        // r0 should be tagged cons pointer: tag=1, value=0
+        let r0_val = helper.get_data_memory(100);
+        assert_eq!(r0_val & 0xFFFF_FFFF, 0, "cons pointer address should be 0");
+        assert_eq!((r0_val >> 32) & 0xF, 1, "cons pointer tag should be 1");
+        // car and cdr
+        assert_eq!(helper.get_data_memory(101) & 0xFFFF_FFFF, 42, "car should be 42");
+        assert_eq!(helper.get_data_memory(102) & 0xFFFF_FFFF, 99, "cdr should be 99");
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_call_and_return() -> Result<(), Box<dyn std::error::Error>> {
+        // CALL pushes return address to stack 1 and jumps.
+        // The function stores a value and returns via pop stack[1] → PC.
+        let runtime = create_runtime()?;
+        let mut tta = runtime
+            .create_model_simple::<TtaTestbench>()
+            .map_err(|e| format!("Failed to create model: {:?}", e))?;
+        let mut helper = TtaTestHelper::new();
+
+        tta.rst_i = 1;
+        tta.clk_i = 0;
+        tta.instr_ready_i = 0;
+        tta.data_ready_i = 0;
+        tta.instr_data_read_i = 0;
+        tta.data_data_read_i = 0;
+
+        // Program layout (word addresses):
+        // 0: imm(0xAA) → r0          ; set r0 = 0xAA before call (1 word)
+        // 1: operand(5) → CALL        ; call function at addr 5 (2 words: opcode + operand)
+        //    return address = 3
+        // 3: r0 → mem[100]            ; store r0 after return (1 word)
+        // 4: none → none              ; halt (1 word)
+        //
+        // Function at addr 5:
+        // 5: imm(0xBB) → r0           ; set r0 = 0xBB (1 word)
+        // 6: pop stack[1] → PC        ; return (1 word)
+
+        let caller = vec![
+            // addr 0: r0 = 0xAA
+            instr().src(Unit::UNIT_ABS_IMMEDIATE).si(0xAA).dst_reg(0),
+            // addr 1-2: call function at addr 5
+            instr().src(Unit::UNIT_ABS_OPERAND).soperand(5).dst_call(),
+            // addr 3: store r0 to mem[100] (should be 0xBB after function)
+            instr().src_reg(0).dst(Unit::UNIT_MEMORY_IMMEDIATE).di(100),
+            // addr 4: halt
+            instr(),
+        ];
+
+        let function = vec![
+            // addr 5: r0 = 0xBB
+            instr().src(Unit::UNIT_ABS_IMMEDIATE).si(0xBB).dst_reg(0),
+            // addr 6: return
+            instr().src_pop(1).dst(Unit::UNIT_PC),
+        ];
+
+        let mut machine_code = Vec::new();
+        for i in &caller {
+            machine_code.extend(i.assemble());
+        }
+        // Verify function starts at expected address
+        assert_eq!(machine_code.len(), 5, "Caller should be 5 words (incl operand)");
+        for i in &function {
+            machine_code.extend(i.assemble());
+        }
+
+        helper.load_instructions(&machine_code, 0);
+        helper.run_until_reset_released(&mut tta)?;
+        helper.run_for_cycles(&mut tta, 300);
+
+        assert_eq!(helper.get_data_memory(100) & 0xFFFF_FFFF, 0xBB,
+            "r0 should be 0xBB after function call and return");
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_call_nested() -> Result<(), Box<dyn std::error::Error>> {
+        // Nested CALL: main calls func_a, func_a calls func_b, both return correctly.
+        let runtime = create_runtime()?;
+        let mut tta = runtime
+            .create_model_simple::<TtaTestbench>()
+            .map_err(|e| format!("Failed to create model: {:?}", e))?;
+        let mut helper = TtaTestHelper::new();
+
+        tta.rst_i = 1;
+        tta.clk_i = 0;
+        tta.instr_ready_i = 0;
+        tta.data_ready_i = 0;
+        tta.instr_data_read_i = 0;
+        tta.data_data_read_i = 0;
+
+        // Layout:
+        // 0: imm(1) → r0              ; 1 word
+        // 1-2: operand(func_a) → CALL ; 2 words, ret=3
+        // 3: r0 → mem[100]            ; 1 word (r0 should be 3 after both calls)
+        // 4: none → none              ; halt
+        //
+        // func_a at addr 5:
+        // 5: imm(2) → r0              ; 1 word
+        // 6-7: operand(func_b) → CALL ; 2 words, ret=8
+        // 8: pop stack[1] → PC        ; return to main
+        //
+        // func_b at addr 9:
+        // 9: imm(3) → r0              ; 1 word
+        // 10: pop stack[1] → PC        ; return to func_a
+
+        let main_code = vec![
+            instr().src(Unit::UNIT_ABS_IMMEDIATE).si(1).dst_reg(0),
+            instr().src(Unit::UNIT_ABS_OPERAND).soperand(5).dst_call(),
+            instr().src_reg(0).dst(Unit::UNIT_MEMORY_IMMEDIATE).di(100),
+            instr(),
+        ];
+
+        let func_a = vec![
+            instr().src(Unit::UNIT_ABS_IMMEDIATE).si(2).dst_reg(0),
+            instr().src(Unit::UNIT_ABS_OPERAND).soperand(9).dst_call(),
+            instr().src_pop(1).dst(Unit::UNIT_PC),
+        ];
+
+        let func_b = vec![
+            instr().src(Unit::UNIT_ABS_IMMEDIATE).si(3).dst_reg(0),
+            instr().src_pop(1).dst(Unit::UNIT_PC),
+        ];
+
+        let mut machine_code = Vec::new();
+        for i in &main_code {
+            machine_code.extend(i.assemble());
+        }
+        assert_eq!(machine_code.len(), 5, "main should be 5 words");
+        for i in &func_a {
+            machine_code.extend(i.assemble());
+        }
+        assert_eq!(machine_code.len(), 9, "main+func_a should be 9 words");
+        for i in &func_b {
+            machine_code.extend(i.assemble());
+        }
+
+        helper.load_instructions(&machine_code, 0);
+        helper.run_until_reset_released(&mut tta)?;
+        helper.run_for_cycles(&mut tta, 400);
+
+        assert_eq!(helper.get_data_memory(100) & 0xFFFF_FFFF, 3,
+            "r0 should be 3 after nested calls (func_b sets it last)");
+
+        Ok(())
+    }
 }

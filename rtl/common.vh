@@ -72,7 +72,10 @@ typedef enum bit[4:0] {
     UNIT_STACK_POP_TAG    = 21,  // Pop with TAG mode (tag bits only)
     UNIT_STACK_PEEK_VALUE = 22,  // Peek with VALUE mode (tag bits zeroed)
     UNIT_STACK_PEEK_TAG   = 23,  // Peek with TAG mode (tag bits only)
-    UNIT_TAG_CMP          = 24   // Dest only: set cond = (src tag == imm[3:0])
+    UNIT_TAG_CMP          = 24,  // Dest only: set cond = (src tag == imm[3:0])
+    UNIT_ALLOC            = 25,  // Dest only: store value at heap_ptr, heap_ptr++
+    UNIT_ALLOC_PTR        = 26,  // Src only: read {si[3:0] as tag, heap_ptr} (tagged pointer)
+    UNIT_CALL             = 27   // Dest only: push return addr to stack 1, jump to value
 } Unit;
 
 // Predicate flag bit positions within the 6-bit flags field.
