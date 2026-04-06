@@ -100,6 +100,34 @@ fn encode_mem_immediate(addr_or_reg: u16, width: AccessWidth, byte_offset: u8) -
     base | off | w
 }
 
+/// Register access mode for tagged-value support.
+///
+/// Encoded in immediate bits [6:5] of UNIT_REGISTER instructions.
+/// Bits [4:0] are the register index, [9:7] are the word offset for
+/// DEREF mode.
+#[derive(Debug, Clone, Copy, PartialEq)]
+#[repr(u8)]
+pub enum RegMode {
+    /// Full 32-bit read/write (backward compatible default)
+    Raw = 0b00,
+    /// Read: tag bits zeroed; Write: preserve tag, set payload
+    Value = 0b01,
+    /// Read: tag bits only; Write: preserve payload, set tag
+    Tag = 0b10,
+    /// Strip tag, add word offset, load/store via data bus
+    Deref = 0b11,
+}
+
+/// Encode a register access with mode and optional DEREF word offset
+/// into the 12-bit immediate field for UNIT_REGISTER.
+///
+///   [4:0] = register index, [6:5] = mode, [9:7] = deref offset
+fn encode_reg_immediate(reg: u16, mode: RegMode, offset: u8) -> u16 {
+    assert!(reg < 32, "Register index must be 0-31");
+    assert!(offset < 8, "DEREF word offset must be 0-7");
+    (reg & 0x1F) | ((mode as u16 & 0x3) << 5) | ((offset as u16 & 0x7) << 7)
+}
+
 #[derive(Debug, Clone)]
 pub struct Instr {
     src_unit: Unit,
@@ -298,6 +326,38 @@ impl Instr {
         assert!(reg < 32, "Register index must be 0-31");
         self.dst_unit = Unit::UNIT_REGISTER_POINTER;
         self.di = encode_mem_immediate(reg, width, byte_offset);
+        self
+    }
+
+    // --- Tagged register access helpers ---
+
+    /// Set source to a register read with the given access mode.
+    pub fn src_reg(mut self, reg: u16, mode: RegMode) -> Self {
+        self.src_unit = Unit::UNIT_REGISTER;
+        self.si = encode_reg_immediate(reg, mode, 0);
+        self
+    }
+
+    /// Set destination to a register write with the given access mode.
+    pub fn dst_reg(mut self, reg: u16, mode: RegMode) -> Self {
+        self.dst_unit = Unit::UNIT_REGISTER;
+        self.di = encode_reg_immediate(reg, mode, 0);
+        self
+    }
+
+    /// Set source to a DEREF register read (strip tag, load from memory
+    /// at untagged address + word offset).
+    pub fn src_deref(mut self, reg: u16, offset: u8) -> Self {
+        self.src_unit = Unit::UNIT_REGISTER;
+        self.si = encode_reg_immediate(reg, RegMode::Deref, offset);
+        self
+    }
+
+    /// Set destination to a DEREF register write (strip tag, store to
+    /// memory at untagged address + word offset).
+    pub fn dst_deref(mut self, reg: u16, offset: u8) -> Self {
+        self.dst_unit = Unit::UNIT_REGISTER;
+        self.di = encode_reg_immediate(reg, RegMode::Deref, offset);
         self
     }
 

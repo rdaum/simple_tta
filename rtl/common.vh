@@ -76,4 +76,26 @@ typedef enum bit [1:0] {
     ACCESS_RESERVED = 2'b11   // Reserved for future use
 } AccessWidth;
 
+// Tag configuration for tagged-value support. The tag occupies the low
+// TAG_WIDTH bits of every 32-bit value. Registers, stacks, and memory
+// all store tagged values; the register access mode (below) controls
+// how the tag is handled during reads and writes.
+localparam int TAG_WIDTH = 2;
+localparam logic [31:0] TAG_MASK_32 = (1 << TAG_WIDTH) - 1;  // 32'h0000_0003
+
+// Register access mode, encoded in immediate bits [6:5] of UNIT_REGISTER
+// instructions. Controls how the register value is interpreted.
+//
+// Immediate layout for UNIT_REGISTER:
+//   [4:0]  — register index (0-31)
+//   [6:5]  — access mode (RegAccessMode below)
+//   [9:7]  — word offset for DEREF mode (0-7)
+//   [11:10] — unused
+typedef enum bit [1:0] {
+    REG_RAW   = 2'b00,  // Full 32-bit read/write (backward compatible)
+    REG_VALUE = 2'b01,  // Read: tag bits zeroed; Write: preserve tag, set payload
+    REG_TAG   = 2'b10,  // Read: tag bits only; Write: preserve payload, set tag
+    REG_DEREF = 2'b11   // Strip tag, add word offset, load/store via data bus
+} RegAccessMode;
+
 `endif  // common_vh_

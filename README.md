@@ -51,7 +51,7 @@ destination require an extended operand.
 
 | Unit | As source | As destination |
 |------|-----------|----------------|
-| `REGISTER` | Read register N (imm[4:0]) | Write register N |
+| `REGISTER` | Read register N (mode-aware, see below) | Write register N (mode-aware) |
 | `ALU_LEFT` | Read ALU lane N left input (imm[2:0]) | Set ALU lane N left input |
 | `ALU_RIGHT` | Read ALU lane N right input | Set ALU lane N right input |
 | `ALU_OPERATOR` | -- | Set ALU lane N operation |
@@ -105,6 +105,45 @@ LABEL → pc_cond         ; jump if condition is set
 The condition register is designed with pipelining in mind: the
 condition is resolved in a prior instruction, so a future pipeline
 can forward the single-bit result with minimal stall penalty.
+
+### Tagged registers
+
+Registers natively support tagged values, where a small type tag
+lives in the low bits of every 32-bit word (2-bit tags by default,
+configurable via `TAG_WIDTH`). The `REGISTER` unit's immediate
+field encodes an access mode in bits [6:5]:
+
+```
+ 9   7  6  5  4       0
++-----+-----+---------+
+|deref| mode| reg idx |
+|offs |     |         |
++-----+-----+---------+
+ 3 b   2 b     5 b
+```
+
+| Mode | Bits [6:5] | Read | Write |
+|------|-----------|------|-------|
+| RAW | 00 | Full 32-bit word | Full 32-bit word |
+| VALUE | 01 | Word with tag bits zeroed | Preserve tag, set payload |
+| TAG | 10 | Tag bits only (zero-extended) | Preserve payload, set tag |
+| DEREF | 11 | Strip tag, load mem[addr + offset] | Strip tag, store to mem[addr + offset] |
+
+DEREF mode uses bits [9:7] as a word offset (0-7) from the
+untagged address. This enables single-move cons cell access:
+
+```
+; r0 holds a tagged cons pointer (tag=1, addr=20)
+reg[r0, DEREF+0] → reg[1]   ; car — load mem[20]
+reg[r0, DEREF+1] → reg[2]   ; cdr — load mem[21]
+```
+
+Type dispatch becomes two instructions:
+
+```
+reg[r0, TAG] → cond          ; extract tag, set condition
+HANDLER → pc_cond            ; branch if tag is nonzero
+```
 
 ### Sub-word memory access
 

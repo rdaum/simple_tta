@@ -34,13 +34,15 @@ module execute (
   logic reg_unit_write[`NUM_REGISTERS-1:0];
   logic [31:0] reg_in_data[`NUM_REGISTERS-1:0];
   logic [31:0] reg_out_data[`NUM_REGISTERS-1:0];
+  logic [31:0] reg_raw_data[`NUM_REGISTERS-1:0];  // Combinational read for tagged ops
   register_unit register_units[`NUM_REGISTERS-1:0] (
-      .rst_i  (rst_i),
-      .clk_i  (clk_i),
-      .sel_i  (reg_unit_select),
-      .wstrb_i(reg_unit_write),
-      .data_i (reg_in_data),
-      .data_o (reg_out_data)
+      .rst_i    (rst_i),
+      .clk_i    (clk_i),
+      .sel_i    (reg_unit_select),
+      .wstrb_i  (reg_unit_write),
+      .data_i   (reg_in_data),
+      .data_o   (reg_out_data),
+      .data_raw_o(reg_raw_data)
   );
 
   // ALU bank: 8 independently addressable compute lanes.
@@ -112,24 +114,39 @@ module execute (
   // Sub-word access helpers: extract width and byte offset from immediate fields.
   // Only applicable for MEMORY_OPERAND and REGISTER_POINTER where the
   // immediate field is not used as the primary address. MEMORY_IMMEDIATE
-  // always uses the full 12-bit immediate as an address (word access only).
+  // and UNIT_REGISTER always use word access (their immediate bits have
+  // different meanings).
   AccessWidth src_width, dst_width;
   logic [1:0] src_byte_offset, dst_byte_offset;
   always_comb begin
-    if (src_unit_i == UNIT_MEMORY_IMMEDIATE) begin
+    if (src_unit_i == UNIT_MEMORY_IMMEDIATE || src_unit_i == UNIT_REGISTER) begin
       src_width       = ACCESS_WORD;
       src_byte_offset = 2'b00;
     end else begin
       src_width       = AccessWidth'(src_immediate_i[11:10]);
       src_byte_offset = src_immediate_i[9:8];
     end
-    if (dst_unit_i == UNIT_MEMORY_IMMEDIATE) begin
+    if (dst_unit_i == UNIT_MEMORY_IMMEDIATE || dst_unit_i == UNIT_REGISTER) begin
       dst_width       = ACCESS_WORD;
       dst_byte_offset = 2'b00;
     end else begin
       dst_width       = AccessWidth'(dst_immediate_i[11:10]);
       dst_byte_offset = dst_immediate_i[9:8];
     end
+  end
+
+  // Register access mode helpers: decode mode, index, and DEREF offset
+  // from the immediate field of UNIT_REGISTER instructions.
+  RegAccessMode src_reg_mode, dst_reg_mode;
+  logic [4:0]   src_reg_idx,  dst_reg_idx;
+  logic [2:0]   src_deref_offset, dst_deref_offset;
+  always_comb begin
+    src_reg_mode     = RegAccessMode'(src_immediate_i[6:5]);
+    src_reg_idx      = src_immediate_i[4:0];
+    src_deref_offset = src_immediate_i[9:7];
+    dst_reg_mode     = RegAccessMode'(dst_immediate_i[6:5]);
+    dst_reg_idx      = dst_immediate_i[4:0];
+    dst_deref_offset = dst_immediate_i[9:7];
   end
 
   // Compute write strobes from access width and byte offset.
@@ -209,10 +226,28 @@ module execute (
               exec_state = EXEC_SRC_MEM_RETRIEVE;
             end
             UNIT_REGISTER: begin
-              // Read a register directly out of the register bank.
-              reg_unit_select[src_immediate_i[4:0]] = 1'b1;
-              src_value = reg_out_data[src_immediate_i[4:0]];
-              exec_state = EXEC_START_DST;
+              case (src_reg_mode)
+                REG_RAW: begin
+                  reg_unit_select[src_reg_idx] = 1'b1;
+                  src_value = reg_raw_data[src_reg_idx];
+                  exec_state = EXEC_START_DST;
+                end
+                REG_VALUE: begin
+                  src_value = reg_raw_data[src_reg_idx] & ~TAG_MASK_32;
+                  exec_state = EXEC_START_DST;
+                end
+                REG_TAG: begin
+                  src_value = reg_raw_data[src_reg_idx] & TAG_MASK_32;
+                  exec_state = EXEC_START_DST;
+                end
+                REG_DEREF: begin
+                  // Strip tag, add word offset, issue memory read.
+                  data_bus.addr = (reg_raw_data[src_reg_idx] & ~TAG_MASK_32)
+                                + {29'b0, src_deref_offset};
+                  data_bus.valid = 1'b1;
+                  exec_state = EXEC_SRC_MEM_RETRIEVE;
+                end
+              endcase
             end
             UNIT_ALU_LEFT: begin
               src_value  = alu_in_data_a[src_immediate_i[2:0]];
@@ -299,13 +334,37 @@ module execute (
         EXEC_START_DST: begin
           case (dst_unit_i) inside
             UNIT_REGISTER: begin
-              reg_unit_select[dst_immediate_i[4:0]] = 1'b1;
-              reg_unit_write[dst_immediate_i[4:0]] = 1'b1;
-              reg_in_data[dst_immediate_i[4:0]] = src_value;
-              begin
-                done_o = 1'b1;
-                exec_state = EXEC_START_SRC;
-              end
+              case (dst_reg_mode)
+                REG_RAW: begin
+                  reg_unit_select[dst_reg_idx] = 1'b1;
+                  reg_unit_write[dst_reg_idx] = 1'b1;
+                  reg_in_data[dst_reg_idx] = src_value;
+                end
+                REG_VALUE: begin
+                  // Preserve tag bits, replace payload.
+                  reg_unit_select[dst_reg_idx] = 1'b1;
+                  reg_unit_write[dst_reg_idx] = 1'b1;
+                  reg_in_data[dst_reg_idx] = (src_value & ~TAG_MASK_32)
+                                           | (reg_raw_data[dst_reg_idx] & TAG_MASK_32);
+                end
+                REG_TAG: begin
+                  // Preserve payload, replace tag bits.
+                  reg_unit_select[dst_reg_idx] = 1'b1;
+                  reg_unit_write[dst_reg_idx] = 1'b1;
+                  reg_in_data[dst_reg_idx] = (reg_raw_data[dst_reg_idx] & ~TAG_MASK_32)
+                                           | (src_value & TAG_MASK_32);
+                end
+                REG_DEREF: begin
+                  // Store src_value to memory at (reg & ~TAG_MASK) + offset.
+                  data_bus.addr = (reg_raw_data[dst_reg_idx] & ~TAG_MASK_32)
+                                + {29'b0, dst_deref_offset};
+                  data_bus.write_data = src_value;
+                  data_bus.wstrb = 4'b1111;
+                  data_bus.valid = 1'b1;
+                end
+              endcase
+              done_o = 1'b1;
+              exec_state = EXEC_START_SRC;
             end
             UNIT_ALU_LEFT: begin
               // Writing ALU_LEFT/RIGHT/OPERATOR configures an ALU lane.

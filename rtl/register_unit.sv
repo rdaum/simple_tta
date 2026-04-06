@@ -11,9 +11,11 @@ module register_unit (
     input wire sel_i,               // Select — enables read and/or write
     input wire wstrb_i,             // Write strobe — high to store data_i
     input logic [31:0] data_i,      // Write data
-    output logic [31:0] data_o      // Read data (registered output)
+    output logic [31:0] data_o,     // Read data (registered output)
+    output wire  [31:0] data_raw_o  // Combinational read — always reflects current r
 );
   reg [31:0] r;
+  assign data_raw_o = r;
 
   always @(posedge clk_i) begin
     if (rst_i) r <= 32'b0;

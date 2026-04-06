@@ -1,7 +1,7 @@
 use marlin::verilator::{VerilatedModelConfig, VerilatorRuntime};
 use std::collections::HashMap;
 
-use tta_sim::{create_tta_runtime, instr, AccessWidth, TtaTestbench, Unit};
+use tta_sim::{create_tta_runtime, instr, AccessWidth, RegMode, TtaTestbench, Unit};
 
 fn create_runtime() -> Result<VerilatorRuntime, Box<dyn std::error::Error>> {
     Ok(create_tta_runtime()?)
@@ -1981,6 +1981,287 @@ mod tests {
 
         let result = helper.get_data_memory(100);
         assert_eq!(result, 123, "42 > 10 is true, branch should be taken, storing 123 not 999");
+
+        Ok(())
+    }
+
+    // --- Tagged register tests ---
+
+    #[test]
+    fn test_reg_tag_read_write() -> Result<(), Box<dyn std::error::Error>> {
+        let runtime = create_runtime()?;
+        let mut tta = runtime
+            .create_model_simple::<TtaTestbench>()
+            .map_err(|e| format!("Failed to create model: {:?}", e))?;
+        let mut helper = TtaTestHelper::new();
+
+        tta.rst_i = 1;
+        tta.clk_i = 0;
+        tta.instr_ready_i = 1;
+        tta.data_ready_i = 1;
+        tta.instr_data_read_i = 0;
+        tta.data_data_read_i = 0;
+
+        // Store a tagged value 0xDEADBEE1 into register 0 (tag = 1, value = 0xDEADBEE0)
+        // Then read tag and value separately.
+        let program = vec![
+            // addr 0-1: load tagged value into r0 (RAW mode)
+            instr()
+                .src(Unit::UNIT_ABS_OPERAND)
+                .soperand(0xDEADBEE1)
+                .dst(Unit::UNIT_REGISTER)
+                .di(0),
+            // addr 2: read TAG of r0 → mem[100]
+            instr()
+                .src_reg(0, RegMode::Tag)
+                .dst(Unit::UNIT_MEMORY_IMMEDIATE)
+                .di(100),
+            // addr 3: read VALUE of r0 → mem[101]
+            instr()
+                .src_reg(0, RegMode::Value)
+                .dst(Unit::UNIT_MEMORY_IMMEDIATE)
+                .di(101),
+            // addr 4: read RAW of r0 → mem[102]
+            instr()
+                .src_reg(0, RegMode::Raw)
+                .dst(Unit::UNIT_MEMORY_IMMEDIATE)
+                .di(102),
+        ];
+
+        let mut machine_code = Vec::new();
+        for i in &program {
+            machine_code.extend(i.assemble());
+        }
+        helper.load_instructions(&machine_code, 0);
+        helper.run_until_reset_released(&mut tta)?;
+        helper.run_for_cycles(&mut tta, 200);
+
+        let tag = helper.get_data_memory(100);
+        let value = helper.get_data_memory(101);
+        let raw = helper.get_data_memory(102);
+
+        assert_eq!(tag, 1, "Tag of 0xDEADBEE1 should be 1 (low 2 bits)");
+        assert_eq!(value, 0xDEADBEE0, "Value should be 0xDEADBEE0 (tag bits zeroed)");
+        assert_eq!(raw, 0xDEADBEE1, "Raw should be the full tagged word");
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_reg_tag_write_preserves_payload() -> Result<(), Box<dyn std::error::Error>> {
+        let runtime = create_runtime()?;
+        let mut tta = runtime
+            .create_model_simple::<TtaTestbench>()
+            .map_err(|e| format!("Failed to create model: {:?}", e))?;
+        let mut helper = TtaTestHelper::new();
+
+        tta.rst_i = 1;
+        tta.clk_i = 0;
+        tta.instr_ready_i = 1;
+        tta.data_ready_i = 1;
+        tta.instr_data_read_i = 0;
+        tta.data_data_read_i = 0;
+
+        // Store 0xCAFE0000 into r0 (tag = 0).
+        // Then write tag = 2 via TAG mode (should preserve payload).
+        // Then read raw to verify.
+        let program = vec![
+            // Load 0xCAFE0000 into r0
+            instr()
+                .src(Unit::UNIT_ABS_OPERAND)
+                .soperand(0xCAFE0000)
+                .dst(Unit::UNIT_REGISTER)
+                .di(0),
+            // Write tag = 2 to r0
+            instr()
+                .src(Unit::UNIT_ABS_IMMEDIATE)
+                .si(2)
+                .dst_reg(0, RegMode::Tag),
+            // Read raw r0 → mem[100]
+            instr()
+                .src_reg(0, RegMode::Raw)
+                .dst(Unit::UNIT_MEMORY_IMMEDIATE)
+                .di(100),
+        ];
+
+        let mut machine_code = Vec::new();
+        for i in &program {
+            machine_code.extend(i.assemble());
+        }
+        helper.load_instructions(&machine_code, 0);
+        helper.run_until_reset_released(&mut tta)?;
+        helper.run_for_cycles(&mut tta, 200);
+
+        let result = helper.get_data_memory(100);
+        assert_eq!(result, 0xCAFE0002, "Payload should be preserved, tag should be 2");
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_reg_value_write_preserves_tag() -> Result<(), Box<dyn std::error::Error>> {
+        let runtime = create_runtime()?;
+        let mut tta = runtime
+            .create_model_simple::<TtaTestbench>()
+            .map_err(|e| format!("Failed to create model: {:?}", e))?;
+        let mut helper = TtaTestHelper::new();
+
+        tta.rst_i = 1;
+        tta.clk_i = 0;
+        tta.instr_ready_i = 1;
+        tta.data_ready_i = 1;
+        tta.instr_data_read_i = 0;
+        tta.data_data_read_i = 0;
+
+        // Store 0x00000003 into r0 (tag = 3, payload = 0).
+        // Then write value 0xBEEF0000 via VALUE mode (should preserve tag).
+        let program = vec![
+            instr()
+                .src(Unit::UNIT_ABS_IMMEDIATE)
+                .si(3)
+                .dst(Unit::UNIT_REGISTER)
+                .di(0),
+            instr()
+                .src(Unit::UNIT_ABS_OPERAND)
+                .soperand(0xBEEF0000)
+                .dst_reg(0, RegMode::Value),
+            instr()
+                .src_reg(0, RegMode::Raw)
+                .dst(Unit::UNIT_MEMORY_IMMEDIATE)
+                .di(100),
+        ];
+
+        let mut machine_code = Vec::new();
+        for i in &program {
+            machine_code.extend(i.assemble());
+        }
+        helper.load_instructions(&machine_code, 0);
+        helper.run_until_reset_released(&mut tta)?;
+        helper.run_for_cycles(&mut tta, 200);
+
+        let result = helper.get_data_memory(100);
+        assert_eq!(result, 0xBEEF0003, "Tag 3 should be preserved, payload updated");
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_reg_deref_car_cdr() -> Result<(), Box<dyn std::error::Error>> {
+        let runtime = create_runtime()?;
+        let mut tta = runtime
+            .create_model_simple::<TtaTestbench>()
+            .map_err(|e| format!("Failed to create model: {:?}", e))?;
+        let mut helper = TtaTestHelper::new();
+
+        tta.rst_i = 1;
+        tta.clk_i = 0;
+        tta.instr_ready_i = 1;
+        tta.data_ready_i = 1;
+        tta.instr_data_read_i = 0;
+        tta.data_data_read_i = 0;
+
+        // Simulate a cons cell at word address 20:
+        //   mem[20] = 0x0000002A (car = 42)
+        //   mem[21] = 0x00000063 (cdr = 99)
+        helper.set_data_memory(20, 42);
+        helper.set_data_memory(21, 99);
+
+        // Load tagged cons pointer into r0: address 20 | tag 1 = 0x00000051
+        // (20 << 0 is 20, but with 2-bit tags, address 20 must be tag-aligned:
+        //  20 = 0x14, low 2 bits = 0, so tagged = 0x14 | 1 = 0x15 = 21... no)
+        //
+        // Wait — the address IS the word address, and the tag lives in the low
+        // bits. So the tagged pointer is (word_address | tag). For word address
+        // 20 = 0x14, the low 2 bits are 0, so 0x14 | 1 = 0x15. Stripping the
+        // tag: 0x15 & ~3 = 0x14 = 20. Correct.
+        let cons_ptr = 20u32 | 1; // word address 20, tag 1 (cons)
+
+        let program = vec![
+            // Load tagged pointer into r0
+            instr()
+                .src(Unit::UNIT_ABS_OPERAND)
+                .soperand(cons_ptr)
+                .dst(Unit::UNIT_REGISTER)
+                .di(0),
+            // DEREF r0 offset 0 (car) → mem[100]
+            instr()
+                .src_deref(0, 0)
+                .dst(Unit::UNIT_MEMORY_IMMEDIATE)
+                .di(100),
+            // DEREF r0 offset 1 (cdr) → mem[101]
+            instr()
+                .src_deref(0, 1)
+                .dst(Unit::UNIT_MEMORY_IMMEDIATE)
+                .di(101),
+        ];
+
+        let mut machine_code = Vec::new();
+        for i in &program {
+            machine_code.extend(i.assemble());
+        }
+        helper.load_instructions(&machine_code, 0);
+        helper.run_until_reset_released(&mut tta)?;
+        helper.run_for_cycles(&mut tta, 200);
+
+        let car = helper.get_data_memory(100);
+        let cdr = helper.get_data_memory(101);
+
+        assert_eq!(car, 42, "car of cons cell at addr 20 should be 42");
+        assert_eq!(cdr, 99, "cdr of cons cell at addr 20 should be 99");
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_reg_deref_write() -> Result<(), Box<dyn std::error::Error>> {
+        let runtime = create_runtime()?;
+        let mut tta = runtime
+            .create_model_simple::<TtaTestbench>()
+            .map_err(|e| format!("Failed to create model: {:?}", e))?;
+        let mut helper = TtaTestHelper::new();
+
+        tta.rst_i = 1;
+        tta.clk_i = 0;
+        tta.instr_ready_i = 1;
+        tta.data_ready_i = 1;
+        tta.instr_data_read_i = 0;
+        tta.data_data_read_i = 0;
+
+        // Write car and cdr of a cons cell via DEREF destination.
+        let cons_ptr = 24u32 | 1; // word address 24, tag 1
+
+        let program = vec![
+            // Load tagged pointer into r0
+            instr()
+                .src(Unit::UNIT_ABS_OPERAND)
+                .soperand(cons_ptr)
+                .dst(Unit::UNIT_REGISTER)
+                .di(0),
+            // Write 777 to car (deref r0 + 0)
+            instr()
+                .src(Unit::UNIT_ABS_OPERAND)
+                .soperand(777)
+                .dst_deref(0, 0),
+            // Write 888 to cdr (deref r0 + 1)
+            instr()
+                .src(Unit::UNIT_ABS_OPERAND)
+                .soperand(888)
+                .dst_deref(0, 1),
+        ];
+
+        let mut machine_code = Vec::new();
+        for i in &program {
+            machine_code.extend(i.assemble());
+        }
+        helper.load_instructions(&machine_code, 0);
+        helper.run_until_reset_released(&mut tta)?;
+        helper.run_for_cycles(&mut tta, 200);
+
+        let car = helper.get_data_memory(24);
+        let cdr = helper.get_data_memory(25);
+
+        assert_eq!(car, 777, "DEREF write at offset 0 should store 777 at word addr 24");
+        assert_eq!(cdr, 888, "DEREF write at offset 1 should store 888 at word addr 25");
 
         Ok(())
     }
