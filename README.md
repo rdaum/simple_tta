@@ -64,8 +64,8 @@ destination require an extended operand.
 | `PC` | Read program counter | Jump (set program counter) |
 | `COND` | Read condition register (0 or 1) | Set condition (nonzero = true) |
 | `PC_COND` | -- | Jump only if condition register is set |
-| `STACK_PUSH_POP` | Pop from stack N (imm[2:0]) | Push to stack N |
-| `STACK_INDEX` | Peek at offset in stack N | Poke at offset in stack N |
+| `STACK_PUSH_POP` | Pop from stack N (mode-aware) | Push to stack N |
+| `STACK_INDEX` | Peek at offset in stack N (mode-aware) | Poke at offset in stack N |
 
 All 16 unit codes are assigned. The assembler in `src/assembler.rs`
 is the authoritative reference for encoding details.
@@ -144,6 +144,16 @@ Type dispatch becomes two instructions:
 ```
 reg[r0, TAG] → cond          ; extract tag, set condition
 HANDLER → pc_cond            ; branch if tag is nonzero
+```
+
+**Stacks** support the same RAW/VALUE/TAG modes on pop and peek
+(not DEREF). Mode bits are in imm[4:3] for push/pop and
+imm[10:9] for indexed access. This enables type dispatch directly
+from the stack without an intermediate register:
+
+```
+peek[stack0, offset0, TAG] → cond   ; check type of TOS
+HANDLER → pc_cond                    ; branch on type
 ```
 
 ### Sub-word memory access
