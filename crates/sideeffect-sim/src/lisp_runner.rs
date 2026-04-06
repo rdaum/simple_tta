@@ -1,9 +1,39 @@
 use std::collections::HashMap;
+use std::path::Path;
 
 use sideeffect_sim::{create_tta_runtime, instr, TtaTestbench, Unit};
 
 const RESULT_ADDR: u8 = 200;
 const MAX_CYCLES: u32 = 50_000;
+
+/// Ensure CWD is `crates/sideeffect-sim/` so the simulator's relative
+/// paths to RTL sources resolve correctly regardless of where the
+/// binary is invoked from.
+fn ensure_cwd() {
+    // If we're already in the right place, nothing to do.
+    if Path::new("../../rtl/tta.sv").exists() {
+        return;
+    }
+    // Try to find the repo root by looking for Cargo.toml with workspace.
+    // Walk up from CWD, then descend into crates/sideeffect-sim.
+    let mut dir = std::env::current_dir().unwrap();
+    loop {
+        let candidate = dir.join("crates/sideeffect-sim");
+        if candidate.join("../../rtl/tta.sv").exists() {
+            std::env::set_current_dir(&candidate).unwrap();
+            return;
+        }
+        if !dir.pop() {
+            break;
+        }
+    }
+    // Also try: maybe we're in the repo root already
+    if Path::new("rtl/tta.sv").exists() {
+        std::env::set_current_dir("crates/sideeffect-sim").unwrap();
+        return;
+    }
+    eprintln!("warning: could not find project root; RTL paths may not resolve");
+}
 
 /// Returns (value, tag, cycles, code_words).
 fn compile_and_run(source: &str) -> Result<(u32, u8, u32, usize), String> {
@@ -130,6 +160,7 @@ fn format_result(value: u32, tag: u8) -> String {
 }
 
 fn main() {
+    ensure_cwd();
     let args: Vec<String> = std::env::args().collect();
 
     // If an expression is passed as argument, evaluate and exit
