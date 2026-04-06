@@ -35,8 +35,8 @@ fn ensure_cwd() {
     eprintln!("warning: could not find project root; RTL paths may not resolve");
 }
 
-/// Returns (value, tag, cycles, code_words).
-fn compile_and_run(source: &str) -> Result<(u32, u8, u32, usize), String> {
+/// Returns (value, tag, cycles, code_words, disassembly).
+fn compile_and_run(source: &str) -> Result<(u32, u8, u32, usize, String), String> {
     let prog = sideeffect_lisp::compile(source).map_err(|e| e.to_string())?;
     let mut code = prog.code;
     // Remove trailing halt, add result store
@@ -48,6 +48,8 @@ fn compile_and_run(source: &str) -> Result<(u32, u8, u32, usize), String> {
             .assemble(),
     );
     code.extend(instr().assemble()); // halt
+
+    let disasm = sideeffect_asm::disassemble_to_string(&code);
 
     let runtime = create_tta_runtime().map_err(|e| format!("{:?}", e))?;
     let mut tta = runtime
@@ -100,7 +102,7 @@ fn compile_and_run(source: &str) -> Result<(u32, u8, u32, usize), String> {
     let result = *data_memory.get(&(RESULT_ADDR as u32)).unwrap_or(&0);
     let value = (result & 0xFFFF_FFFF) as u32;
     let tag = ((result >> 32) & 0xF) as u8;
-    Ok((value, tag, cycles, code.len()))
+    Ok((value, tag, cycles, code.len(), disasm))
 }
 
 fn step<'a>(
@@ -167,7 +169,8 @@ fn main() {
     if args.len() > 1 {
         let source = args[1..].join(" ");
         match compile_and_run(&source) {
-            Ok((value, tag, cycles, words)) => {
+            Ok((value, tag, cycles, words, disasm)) => {
+                eprint!("{}", disasm);
                 println!("{}", format_result(value, tag));
                 eprintln!("({} cycles, {} words)", cycles, words);
             }
@@ -238,7 +241,8 @@ fn main() {
         }
 
         match compile_and_run(&full_source) {
-            Ok((value, tag, cycles, words)) => {
+            Ok((value, tag, cycles, words, disasm)) => {
+                eprint!("{}", disasm);
                 println!("=> {}", format_result(value, tag));
                 eprintln!("   ({} cycles, {} words)", cycles, words);
 
