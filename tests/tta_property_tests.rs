@@ -34,13 +34,16 @@ impl TtaPropertyHelper {
         // Rising edge
         tta.clk_i = 1;
 
-        // Handle memory interface for instruction bus
+        // Drive instruction bus: assert ready only when responding to valid.
         if tta.instr_valid_o != 0 {
             let addr = tta.instr_addr_o;
             tta.instr_data_read_i = *self.instruction_memory.get(&addr).unwrap_or(&0);
+            tta.instr_ready_i = 1;
+        } else {
+            tta.instr_ready_i = 0;
         }
 
-        // Handle memory interface for data bus
+        // Drive data bus: assert ready only when responding to valid.
         if tta.data_valid_o != 0 {
             let addr = tta.data_addr_o;
             let wstrb = tta.data_wstrb_o as u8;
@@ -59,6 +62,9 @@ impl TtaPropertyHelper {
                 // Read operation
                 tta.data_data_read_i = *self.data_memory.get(&addr).unwrap_or(&0);
             }
+            tta.data_ready_i = 1;
+        } else {
+            tta.data_ready_i = 0;
         }
 
         tta.eval();
@@ -151,8 +157,8 @@ mod property_tests {
             // Initialize with some random state
             tta.rst_i = if initial_state { 1 } else { 0 };
             tta.clk_i = 0;
-            tta.instr_ready_i = 1;
-            tta.data_ready_i = 1;
+            tta.instr_ready_i = 0;
+            tta.data_ready_i = 0;
             tta.instr_data_read_i = 0;
             tta.data_data_read_i = 0;
 
@@ -184,8 +190,8 @@ mod property_tests {
             // Initialize
             tta.rst_i = 1;
             tta.clk_i = 0;
-            tta.instr_ready_i = 1;
-            tta.data_ready_i = 1;
+            tta.instr_ready_i = 0;
+            tta.data_ready_i = 0;
             tta.instr_data_read_i = 0;
             tta.data_data_read_i = 0;
 
@@ -232,8 +238,8 @@ mod property_tests {
             // Initialize
             tta.rst_i = 1;
             tta.clk_i = 0;
-            tta.instr_ready_i = 1;
-            tta.data_ready_i = 1;
+            tta.instr_ready_i = 0;
+            tta.data_ready_i = 0;
             tta.instr_data_read_i = 0;
             tta.data_data_read_i = 0;
 
@@ -361,8 +367,8 @@ mod property_tests {
             // Initialize
             tta.rst_i = 1;
             tta.clk_i = 0;
-            tta.instr_ready_i = 1;
-            tta.data_ready_i = 1;
+            tta.instr_ready_i = 0;
+            tta.data_ready_i = 0;
             tta.instr_data_read_i = 0;
             tta.data_data_read_i = 0;
 
@@ -410,8 +416,8 @@ mod property_tests {
             // Initialize
             tta.rst_i = 1;
             tta.clk_i = 0;
-            tta.instr_ready_i = 1;
-            tta.data_ready_i = 1;
+            tta.instr_ready_i = 0;
+            tta.data_ready_i = 0;
             tta.instr_data_read_i = 0;
             tta.data_data_read_i = 0;
 
@@ -494,8 +500,8 @@ mod property_tests {
             // Initialize
             tta.rst_i = 1;
             tta.clk_i = 0;
-            tta.instr_ready_i = 1;
-            tta.data_ready_i = 1;
+            tta.instr_ready_i = 0;
+            tta.data_ready_i = 0;
             tta.instr_data_read_i = 0;
             tta.data_data_read_i = 0;
 
@@ -562,8 +568,8 @@ mod property_tests {
             // Initialize
             tta.rst_i = 1;
             tta.clk_i = 0;
-            tta.instr_ready_i = 1;
-            tta.data_ready_i = 1;
+            tta.instr_ready_i = 0;
+            tta.data_ready_i = 0;
             tta.instr_data_read_i = 0;
             tta.data_data_read_i = 0;
 
@@ -790,8 +796,8 @@ mod property_tests {
             // Initialize
             tta.rst_i = 1;
             tta.clk_i = 0;
-            tta.instr_ready_i = 1;
-            tta.data_ready_i = 1;
+            tta.instr_ready_i = 0;
+            tta.data_ready_i = 0;
             tta.instr_data_read_i = 0;
             tta.data_data_read_i = 0;
 
@@ -843,8 +849,8 @@ mod property_tests {
             // Initialize
             tta.rst_i = 1;
             tta.clk_i = 0;
-            tta.instr_ready_i = 1;
-            tta.data_ready_i = 1;
+            tta.instr_ready_i = 0;
+            tta.data_ready_i = 0;
             tta.instr_data_read_i = 0;
             tta.data_data_read_i = 0;
 
@@ -922,8 +928,8 @@ mod property_tests {
             // Initialize
             tta.rst_i = 1;
             tta.clk_i = 0;
-            tta.instr_ready_i = 1;
-            tta.data_ready_i = 1;
+            tta.instr_ready_i = 0;
+            tta.data_ready_i = 0;
             tta.instr_data_read_i = 0;
             tta.data_data_read_i = 0;
 
@@ -964,8 +970,8 @@ mod property_tests {
             // Initialize
             tta.rst_i = 1;
             tta.clk_i = 0;
-            tta.instr_ready_i = 1;
-            tta.data_ready_i = 1;
+            tta.instr_ready_i = 0;
+            tta.data_ready_i = 0;
             tta.instr_data_read_i = 0;
             tta.data_data_read_i = 0;
 
@@ -993,8 +999,8 @@ mod property_tests {
             tta = runtime.create_model_simple::<TtaTestbench>().unwrap();
             tta.rst_i = 1;
             tta.clk_i = 0;
-            tta.instr_ready_i = 1;
-            tta.data_ready_i = 1;
+            tta.instr_ready_i = 0;
+            tta.data_ready_i = 0;
             tta.instr_data_read_i = 0;
             tta.data_data_read_i = 0;
 
@@ -1039,8 +1045,8 @@ mod property_tests {
             // Initialize
             tta.rst_i = 1;
             tta.clk_i = 0;
-            tta.instr_ready_i = 1;
-            tta.data_ready_i = 1;
+            tta.instr_ready_i = 0;
+            tta.data_ready_i = 0;
             tta.instr_data_read_i = 0;
             tta.data_data_read_i = 0;
 
@@ -1106,8 +1112,8 @@ mod property_tests {
             // Initialize
             tta.rst_i = 1;
             tta.clk_i = 0;
-            tta.instr_ready_i = 1;
-            tta.data_ready_i = 1;
+            tta.instr_ready_i = 0;
+            tta.data_ready_i = 0;
             tta.instr_data_read_i = 0;
             tta.data_data_read_i = 0;
 
@@ -1162,8 +1168,8 @@ mod property_tests {
             // Initialize
             tta.rst_i = 1;
             tta.clk_i = 0;
-            tta.instr_ready_i = 1;
-            tta.data_ready_i = 1;
+            tta.instr_ready_i = 0;
+            tta.data_ready_i = 0;
             tta.instr_data_read_i = 0;
             tta.data_data_read_i = 0;
 
@@ -1267,8 +1273,8 @@ mod property_tests {
             // Initialize
             tta.rst_i = 1;
             tta.clk_i = 0;
-            tta.instr_ready_i = 1;
-            tta.data_ready_i = 1;
+            tta.instr_ready_i = 0;
+            tta.data_ready_i = 0;
             tta.instr_data_read_i = 0;
             tta.data_data_read_i = 0;
 
@@ -1312,8 +1318,8 @@ mod property_tests {
             // Initialize
             tta.rst_i = 1;
             tta.clk_i = 0;
-            tta.instr_ready_i = 1;
-            tta.data_ready_i = 1;
+            tta.instr_ready_i = 0;
+            tta.data_ready_i = 0;
             tta.instr_data_read_i = 0;
             tta.data_data_read_i = 0;
 
@@ -1352,8 +1358,8 @@ mod property_tests {
             // Initialize
             tta.rst_i = 1;
             tta.clk_i = 0;
-            tta.instr_ready_i = 1;
-            tta.data_ready_i = 1;
+            tta.instr_ready_i = 0;
+            tta.data_ready_i = 0;
             tta.instr_data_read_i = 0;
             tta.data_data_read_i = 0;
 
@@ -1393,8 +1399,8 @@ mod property_tests {
             // Initialize
             tta.rst_i = 1;
             tta.clk_i = 0;
-            tta.instr_ready_i = 1;
-            tta.data_ready_i = 1;
+            tta.instr_ready_i = 0;
+            tta.data_ready_i = 0;
             tta.instr_data_read_i = 0;
             tta.data_data_read_i = 0;
 
@@ -1436,8 +1442,8 @@ mod property_tests {
             // Initialize
             tta.rst_i = 1;
             tta.clk_i = 0;
-            tta.instr_ready_i = 1;
-            tta.data_ready_i = 1;
+            tta.instr_ready_i = 0;
+            tta.data_ready_i = 0;
             tta.instr_data_read_i = 0;
             tta.data_data_read_i = 0;
 
@@ -1480,8 +1486,8 @@ mod property_tests {
             // Initialize
             tta.rst_i = 1;
             tta.clk_i = 0;
-            tta.instr_ready_i = 1;
-            tta.data_ready_i = 1;
+            tta.instr_ready_i = 0;
+            tta.data_ready_i = 0;
             tta.instr_data_read_i = 0;
             tta.data_data_read_i = 0;
 
