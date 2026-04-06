@@ -231,11 +231,38 @@ just Verilator simulation.
   * I'd like to add support for interrupts.
   * Who knows? I aim for exotic fun.
 
+### Cycle counts
+
+Measured from the Verilator simulation with the instruction queue
+warm (fetch latency hidden). Counts include the 1-cycle
+accept→exec_active handshake overhead.
+
+| Instruction pattern | Cycles | Notes |
+|---------------------|--------|-------|
+| imm → reg | 3 | Fused src+dst |
+| reg → reg | 3 | Fused src+dst |
+| imm → ALU input/op | 3 | Fused src+dst |
+| ALU result → reg | 3 | Combinational ALU, fused |
+| reg → mem (write) | 4 | Fire-and-forget bus write |
+| mem → reg (read) | 5 | Bus read wait state |
+| abs_operand → reg | 3 | 2-word instruction, fused |
+| imm → cond | 3 | Fused |
+| pc_cond (not taken) | 3 | 2-word, fused |
+| reg[TAG] → reg | 5 | Tag extract, fused |
+| reg[DEREF] → reg | 3 | Bus read through tagged pointer |
+| push (via operand) | 6 | 2-word + stack handshake |
+| pop → reg | 6 | Stack handshake + arming cycle |
+
+The common case — register/immediate/ALU moves — is 3 cycles.
+Memory and stack operations pay extra for bus or stack handshakes.
+With the 2-entry instruction queue, the fetch cost is fully hidden
+for sequential code; branches stall the fetch until resolved.
+
 ### Building, running
 
 The project uses Rust with the Marlin library for simulation:
 
-  * `cargo test` runs the full test suite (97 tests: integration,
+  * `cargo test` runs the full test suite (100+ tests: integration,
     property-based, and unit tests)
   * `cargo run -- --cycles 200` runs the Marlin-backed `simtop`
     wrapper with boot ROM and external SRAM modeling

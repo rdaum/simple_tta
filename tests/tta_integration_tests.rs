@@ -3010,4 +3010,95 @@ mod tests {
 
         Ok(())
     }
+
+    // --- Cycle measurement (prints to stdout with --nocapture) ---
+
+    #[test]
+    fn test_measure_cycle_counts() -> Result<(), Box<dyn std::error::Error>> {
+        let runtime = create_runtime()?;
+        let mut tta = runtime
+            .create_model_simple::<TtaTestbench>()
+            .map_err(|e| format!("Failed to create model: {:?}", e))?;
+        let mut helper = TtaTestHelper::new();
+
+        tta.rst_i = 1;
+        tta.clk_i = 0;
+        tta.instr_ready_i = 0;
+        tta.data_ready_i = 0;
+        tta.instr_data_read_i = 0;
+        tta.data_data_read_i = 0;
+
+        helper.set_data_memory(50, 0xCAFE);
+
+        // Sequence of different instruction types, measuring each.
+        let program = vec![
+            // 0: imm → reg (1-word, fused)
+            instr().src(Unit::UNIT_ABS_IMMEDIATE).si(42).dst(Unit::UNIT_REGISTER).di(0),
+            // 1: reg → reg (1-word, fused)
+            instr().src(Unit::UNIT_REGISTER).si(0).dst(Unit::UNIT_REGISTER).di(1),
+            // 2: imm → ALU left (1-word, fused)
+            instr().src(Unit::UNIT_ABS_IMMEDIATE).si(10).dst(Unit::UNIT_ALU_LEFT).di(0),
+            // 3: imm → ALU right (1-word, fused)
+            instr().src(Unit::UNIT_ABS_IMMEDIATE).si(20).dst(Unit::UNIT_ALU_RIGHT).di(0),
+            // 4: imm → ALU op (1-word, fused)
+            instr().src(Unit::UNIT_ABS_IMMEDIATE).si(1).dst(Unit::UNIT_ALU_OPERATOR).di(0),
+            // 5: ALU result → reg (1-word, fused)
+            instr().src(Unit::UNIT_ALU_RESULT).si(0).dst(Unit::UNIT_REGISTER).di(2),
+            // 6: reg → mem_imm (1-word, fused — fire-and-forget write)
+            instr().src(Unit::UNIT_REGISTER).si(0).dst(Unit::UNIT_MEMORY_IMMEDIATE).di(100),
+            // 7: mem_imm → reg (1-word, multi-cycle — bus read)
+            instr().src(Unit::UNIT_MEMORY_IMMEDIATE).si(50).dst(Unit::UNIT_REGISTER).di(3),
+            // 8-9: abs_operand → reg (2-word, fused)
+            instr().src(Unit::UNIT_ABS_OPERAND).soperand(0x1234).dst(Unit::UNIT_REGISTER).di(4),
+            // 10-11: push immediate (2-word, stack dst)
+            instr().push_immediate(0, 0xBEEF),
+            // 12: pop → reg (1-word, stack src)
+            instr().pop_to_reg(0, 5),
+            // 13: imm → cond (1-word, fused)
+            instr().src(Unit::UNIT_ABS_IMMEDIATE).si(1).dst(Unit::UNIT_COND),
+            // 14-15: conditional branch not-taken (2-word)
+            instr().src(Unit::UNIT_ABS_OPERAND).soperand(99).dst(Unit::UNIT_PC_COND),
+            // 16: reg TAG → reg (1-word, fused)
+            instr().src_reg(0, RegMode::Tag).dst(Unit::UNIT_REGISTER).di(6),
+            // 17: reg DEREF → reg (1-word, multi-cycle — bus read via tagged ptr)
+            // (need a valid tagged pointer first — use reg 0 which has 42)
+            // Actually 42 has tag=2, payload=40. mem[40] might be 0. That's fine for timing.
+            instr().src_deref(0, 0).dst(Unit::UNIT_REGISTER).di(7),
+        ];
+
+        let mut machine_code = Vec::new();
+        for i in &program {
+            machine_code.extend(i.assemble());
+        }
+        helper.load_instructions(&machine_code, 0);
+        helper.run_until_reset_released(&mut tta)?;
+
+        let labels = [
+            "imm→reg (cold start)",
+            "reg→reg (queued)",
+            "imm→alu_left",
+            "imm→alu_right",
+            "imm→alu_op",
+            "alu_result→reg",
+            "reg→mem_imm (write)",
+            "mem_imm→reg (read)",
+            "abs_operand→reg (2-word)",
+            "push_immediate (2-word)",
+            "pop→reg (stack src)",
+            "imm→cond",
+            "pc_cond not-taken (2-word)",
+            "reg[TAG]→reg",
+            "reg[DEREF]→reg (bus read)",
+        ];
+
+        println!("\n=== Cycle counts per instruction ===");
+        for label in &labels {
+            let cycles = helper.run_until_done(&mut tta, 100)
+                .unwrap_or(0);
+            println!("  {:>4} cycles  {}", cycles, label);
+        }
+        println!();
+
+        Ok(())
+    }
 }
