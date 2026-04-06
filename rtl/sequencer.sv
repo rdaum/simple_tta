@@ -53,72 +53,82 @@ module sequencer (
 
   always @(posedge clk_i) begin
     if (rst_i) begin
-      pc_o = 32'b0;
-      op_o = 32'b0;
-      sequencer_state = SEQ_START;
-      instr_bus.valid = 1'b0;
+      pc_o <= 32'b0;
+      op_o <= 32'b0;
+      src_operand_o <= 32'b0;
+      dst_operand_o <= 32'b0;
+      done_o <= 1'b0;
+      sequencer_state <= SEQ_START;
+      instr_bus.valid <= 1'b0;
+      instr_bus.instr <= 1'b0;
+      instr_bus.addr <= 32'b0;
     end else if (sel_i) begin
       case (sequencer_state)
         SEQ_START: begin
+          automatic logic [31:0] fetch_pc = pc_write_en_i ? pc_write_i : pc_o;
           // If execute requested a PC override (jump/branch), apply it now
           // before fetching the next opcode.
-          if (pc_write_en_i)
-            pc_o = pc_write_i;
+          pc_o <= fetch_pc;
           // Begin reading the next opcode at the current program counter.
-          instr_bus.valid = 1'b1;
-          instr_bus.instr = 1'b1;
-          instr_bus.addr = pc_o;
-          sequencer_state = SEQ_READ_OPCODE;
-          done_o = 1'b0;
+          instr_bus.valid <= 1'b1;
+          instr_bus.instr <= 1'b1;
+          instr_bus.addr <= fetch_pc;
+          sequencer_state <= SEQ_READ_OPCODE;
+          done_o <= 1'b0;
         end
         SEQ_READ_OPCODE: begin
           if (instr_bus.ready) begin
-            op_o = instr_bus.read_data;
+            op_o <= instr_bus.read_data;
             // Determine operand requirements directly from the raw bus data,
             // since the combinational decoder may not have re-evaluated yet
             // within this always block.
             if (needs_src_op(instr_bus.read_data) || needs_dst_op(instr_bus.read_data)) begin
-              instr_bus.valid = 1'b1;
-              instr_bus.instr = 1'b0;
-              instr_bus.addr  = pc_o + 1;
-              if (needs_src_op(instr_bus.read_data)) sequencer_state = SEQ_READ_SRC_OPERAND;
-              else sequencer_state = SEQ_READ_DST_OPERAND;
+              instr_bus.valid <= 1'b1;
+              instr_bus.instr <= 1'b0;
+              instr_bus.addr  <= pc_o + 1;
+              if (needs_src_op(instr_bus.read_data)) sequencer_state <= SEQ_READ_SRC_OPERAND;
+              else sequencer_state <= SEQ_READ_DST_OPERAND;
             end else begin
+              automatic logic [31:0] next_pc = pc_o + 1;
               // No operand words — instruction is 1 word. Advance PC past it.
-              done_o = 1'b1;
-              pc_o = pc_o + 1;
-              sequencer_state = SEQ_START;
+              done_o <= 1'b1;
+              pc_o <= next_pc;
+              sequencer_state <= SEQ_START;
             end
           end
         end
         SEQ_READ_SRC_OPERAND: begin
           if (instr_bus.ready) begin
-            src_operand_o = instr_bus.read_data;
+            src_operand_o <= instr_bus.read_data;
             // Advance past the source operand word.
-            pc_o = pc_o + 1;
-            if (needs_dst_op(op_o)) sequencer_state = SEQ_READ_DST_OPERAND_START;
+            if (needs_dst_op(op_o)) begin
+              pc_o <= pc_o + 1;
+              sequencer_state <= SEQ_READ_DST_OPERAND_START;
+            end
             else begin
+              automatic logic [31:0] next_pc = pc_o + 2;
               // 2-word instruction (opcode + src operand). Advance past opcode.
-              done_o = 1'b1;
-              pc_o = pc_o + 1;
-              sequencer_state = SEQ_START;
+              done_o <= 1'b1;
+              pc_o <= next_pc;
+              sequencer_state <= SEQ_START;
             end
           end
         end
         SEQ_READ_DST_OPERAND_START: begin
           // Issue a bus read for the destination operand at pc+1.
-          instr_bus.addr  = pc_o + 1;
-          instr_bus.valid = 1'b1;
-          instr_bus.instr = 1'b0;
-          sequencer_state = SEQ_READ_DST_OPERAND;
+          instr_bus.addr  <= pc_o + 1;
+          instr_bus.valid <= 1'b1;
+          instr_bus.instr <= 1'b0;
+          sequencer_state <= SEQ_READ_DST_OPERAND;
         end
         SEQ_READ_DST_OPERAND: begin
           if (instr_bus.ready) begin
-            dst_operand_o = instr_bus.read_data;
+            automatic logic [31:0] next_pc = pc_o + 2;
+            dst_operand_o <= instr_bus.read_data;
             // 3-word instruction: advance past dst operand + opcode.
-            pc_o = pc_o + 2;
-            done_o = 1'b1;
-            sequencer_state = SEQ_START;
+            pc_o <= next_pc;
+            done_o <= 1'b1;
+            sequencer_state <= SEQ_START;
           end
         end
       endcase

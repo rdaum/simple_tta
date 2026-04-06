@@ -106,6 +106,7 @@ module execute (
   // the sequencer to pulse sel_i for one cycle and move on to prefetch
   // while execute continues processing multi-cycle operations.
   logic exec_active;
+  logic stack_wait_armed;
 
   // 1-bit condition register for conditional branches.
   // Written via UNIT_COND (nonzero → 1, zero → 0).
@@ -173,57 +174,72 @@ module execute (
 
   always @(posedge clk_i) begin
     if (rst_i) begin
-      reg_unit_select = '{default: 1'b0};
-      reg_unit_write = '{default: 1'b0};
+      reg_unit_select <= '{default: 1'b0};
+      reg_unit_write <= '{default: 1'b0};
 
-      alu_operation = '{default: ALU_NOP};
+      alu_operation <= '{default: ALU_NOP};
 
       // Initialize stack signals
-      stack_push = 1'b0;
-      stack_pop = 1'b0;
-      stack_index_read = 1'b0;
-      stack_index_write = 1'b0;
+      stack_select <= 3'b000;
+      stack_push <= 1'b0;
+      stack_pop <= 1'b0;
+      stack_offset <= 6'b0;
+      stack_index_read <= 1'b0;
+      stack_index_write <= 1'b0;
+      stack_data_in <= 32'b0;
 
       // Initialize execution state
-      exec_state = EXEC_START_SRC;
-      cond_reg = 1'b0;
-      pc_write_en_o = 1'b0;
-      exec_active = 1'b0;
+      exec_state <= EXEC_START_SRC;
+      cond_reg <= 1'b0;
+      src_value <= 32'b0;
+      stack_wait_armed <= 1'b0;
+      pc_write_o <= 32'b0;
+      pc_write_en_o <= 1'b0;
+      exec_active <= 1'b0;
+      data_bus.valid <= 1'b0;
+      data_bus.instr <= 1'b0;
+      data_bus.wstrb <= 4'b0000;
+      data_bus.addr <= 32'b0;
+      data_bus.write_data <= 32'b0;
 
-      done_o = 1'b0;
+      done_o <= 1'b0;
     end else begin
+      automatic logic start_execute = sel_i && !exec_active && !done_o;
+      automatic logic run_execute = (exec_active || start_execute) && !done_o;
+
       // Auto-clear done_o and pc_write_en_o after one cycle. This
       // makes done_o a pulse rather than a held level, enabling the
       // sequencer to detect completion and move on.
       if (done_o) begin
-        done_o = 1'b0;
-        pc_write_en_o = 1'b0;
-        exec_active = 1'b0;
+        done_o <= 1'b0;
+        pc_write_en_o <= 1'b0;
+        exec_active <= 1'b0;
       end
 
       // Start on sel_i pulse; stay active through multi-cycle operations.
-      if (sel_i && !exec_active)
-        exec_active = 1'b1;
+      if (start_execute)
+        exec_active <= 1'b1;
 
-      if (exec_active) begin
+      if (run_execute) begin
       case (exec_state)
         EXEC_START_SRC: begin
           // src_resolved: set by immediate sources so the destination can
           // be evaluated in the same cycle (fused src+dst, no extra state).
           automatic logic src_resolved = 1'b0;
-          done_o = 1'b0;
-          pc_write_en_o = 1'b0;
-          reg_unit_select = '{default: 1'b0};
-          reg_unit_write = '{default: 1'b0};
-          data_bus.valid = 1'b0;
-          data_bus.wstrb = 4'b0000;
-          data_bus.instr = 1'b0;
+          automatic logic [31:0] resolved_src = 32'b0;
+          done_o <= 1'b0;
+          pc_write_en_o <= 1'b0;
+          reg_unit_select <= '{default: 1'b0};
+          reg_unit_write <= '{default: 1'b0};
+          data_bus.valid <= 1'b0;
+          data_bus.wstrb <= 4'b0000;
+          data_bus.instr <= 1'b0;
 
           // Clear stack signals
-          stack_push = 1'b0;
-          stack_pop = 1'b0;
-          stack_index_read = 1'b0;
-          stack_index_write = 1'b0;
+          stack_push <= 1'b0;
+          stack_pop <= 1'b0;
+          stack_index_read <= 1'b0;
+          stack_index_write <= 1'b0;
           case (src_unit_i) inside
             // Source is memory-backed, so begin a bus read.
             // Width (imm[11:10]) and byte offset (imm[9:8]) are applied
@@ -232,91 +248,105 @@ module execute (
             // MEMORY_IMMEDIATE always does a full-word read.
             UNIT_MEMORY_OPERAND, UNIT_MEMORY_IMMEDIATE, UNIT_REGISTER_POINTER: begin
               case (src_unit_i)
-                UNIT_MEMORY_OPERAND: data_bus.addr = src_operand_i;
-                UNIT_MEMORY_IMMEDIATE: data_bus.addr = {20'b0, src_immediate_i};
+                UNIT_MEMORY_OPERAND: data_bus.addr <= src_operand_i;
+                UNIT_MEMORY_IMMEDIATE: data_bus.addr <= {20'b0, src_immediate_i};
                 UNIT_REGISTER_POINTER: begin
-                  reg_unit_select[src_immediate_i[4:0]] = 1'b1;
-                  data_bus.addr = reg_out_data[src_immediate_i[4:0]];
+                  reg_unit_select[src_immediate_i[4:0]] <= 1'b1;
+                  data_bus.addr <= reg_out_data[src_immediate_i[4:0]];
                 end
-                default: data_bus.addr = 32'b0;
+                default: data_bus.addr <= 32'b0;
               endcase
-              data_bus.valid = 1'b1;
-              exec_state = EXEC_SRC_MEM_RETRIEVE;
+              data_bus.valid <= 1'b1;
+              exec_state <= EXEC_SRC_MEM_RETRIEVE;
             end
             UNIT_REGISTER: begin
               case (src_reg_mode)
                 REG_RAW: begin
-                  reg_unit_select[src_reg_idx] = 1'b1;
-                  src_value = reg_raw_data[src_reg_idx];
+                  reg_unit_select[src_reg_idx] <= 1'b1;
+                  resolved_src = reg_raw_data[src_reg_idx];
+                  src_value <= resolved_src;
                   src_resolved = 1'b1;
                 end
                 REG_VALUE: begin
-                  src_value = reg_raw_data[src_reg_idx] & ~TAG_MASK_32;
+                  resolved_src = reg_raw_data[src_reg_idx] & ~TAG_MASK_32;
+                  src_value <= resolved_src;
                   src_resolved = 1'b1;
                 end
                 REG_TAG: begin
-                  src_value = reg_raw_data[src_reg_idx] & TAG_MASK_32;
+                  resolved_src = reg_raw_data[src_reg_idx] & TAG_MASK_32;
+                  src_value <= resolved_src;
                   src_resolved = 1'b1;
                 end
                 REG_DEREF: begin
-                  data_bus.addr = (reg_raw_data[src_reg_idx] & ~TAG_MASK_32)
-                                + {29'b0, src_deref_offset};
-                  data_bus.valid = 1'b1;
-                  exec_state = EXEC_SRC_MEM_RETRIEVE;
+                  data_bus.addr <= (reg_raw_data[src_reg_idx] & ~TAG_MASK_32)
+                                 + {29'b0, src_deref_offset};
+                  data_bus.valid <= 1'b1;
+                  exec_state <= EXEC_SRC_MEM_RETRIEVE;
                 end
               endcase
             end
             UNIT_ALU_LEFT: begin
-              src_value  = alu_in_data_a[src_immediate_i[2:0]];
+              resolved_src = alu_in_data_a[src_immediate_i[2:0]];
+              src_value <= resolved_src;
               src_resolved = 1'b1;
             end
             UNIT_ALU_RIGHT: begin
-              src_value  = alu_in_data_b[src_immediate_i[2:0]];
+              resolved_src = alu_in_data_b[src_immediate_i[2:0]];
+              src_value <= resolved_src;
               src_resolved = 1'b1;
             end
             UNIT_ALU_RESULT: begin
               // ALU results are combinational — read directly, no wait.
-              src_value = alu_out_data[src_immediate_i[2:0]];
+              resolved_src = alu_out_data[src_immediate_i[2:0]];
+              src_value <= resolved_src;
               src_resolved = 1'b1;
             end
             UNIT_ABS_IMMEDIATE: begin
-              src_value  = {20'b0, src_immediate_i};
+              resolved_src = {20'b0, src_immediate_i};
+              src_value <= resolved_src;
               src_resolved = 1'b1;
             end
             UNIT_ABS_OPERAND: begin
-              src_value  = src_operand_i;
+              resolved_src = src_operand_i;
+              src_value <= resolved_src;
               src_resolved = 1'b1;
             end
             UNIT_PC: begin
-              src_value  = pc_i;
+              resolved_src = pc_i;
+              src_value <= resolved_src;
               src_resolved = 1'b1;
             end
             UNIT_COND: begin
-              src_value  = {31'b0, cond_reg};
+              resolved_src = {31'b0, cond_reg};
+              src_value <= resolved_src;
               src_resolved = 1'b1;
             end
             UNIT_STACK_PUSH_POP: begin
-              stack_select = src_immediate_i[2:0];
-              stack_pop = 1'b1;
-              exec_state = EXEC_SRC_STACK_WAIT;
+              stack_select <= src_immediate_i[2:0];
+              stack_pop <= 1'b1;
+              stack_wait_armed <= 1'b0;
+              exec_state <= EXEC_SRC_STACK_WAIT;
             end
             UNIT_STACK_INDEX: begin
-              stack_select = src_immediate_i[2:0];
-              stack_offset = src_immediate_i[8:3];
-              stack_index_read = 1'b1;
-              exec_state = EXEC_SRC_STACK_WAIT;
+              stack_select <= src_immediate_i[2:0];
+              stack_offset <= src_immediate_i[8:3];
+              stack_index_read <= 1'b1;
+              stack_wait_armed <= 1'b0;
+              exec_state <= EXEC_SRC_STACK_WAIT;
             end
             UNIT_NONE: begin
-              src_value = 32'b0;
+              resolved_src = 32'b0;
+              src_value <= resolved_src;
               if (dst_unit_i != UNIT_NONE)
                 src_resolved = 1'b1;
               else begin
-                done_o = 1'b1;
-                exec_state = EXEC_START_SRC;
+                done_o <= 1'b1;
+                exec_state <= EXEC_START_SRC;
               end
             end
             default: begin
-              src_value  = 32'b0;
+              resolved_src = 32'b0;
+              src_value <= resolved_src;
               src_resolved = 1'b1;
             end
           endcase
@@ -330,75 +360,75 @@ module execute (
               UNIT_REGISTER: begin
                 case (dst_reg_mode)
                   REG_RAW: begin
-                    reg_unit_select[dst_reg_idx] = 1'b1;
-                    reg_unit_write[dst_reg_idx] = 1'b1;
-                    reg_in_data[dst_reg_idx] = src_value;
+                    reg_unit_select[dst_reg_idx] <= 1'b1;
+                    reg_unit_write[dst_reg_idx] <= 1'b1;
+                    reg_in_data[dst_reg_idx] <= resolved_src;
                   end
                   REG_VALUE: begin
-                    reg_unit_select[dst_reg_idx] = 1'b1;
-                    reg_unit_write[dst_reg_idx] = 1'b1;
-                    reg_in_data[dst_reg_idx] = (src_value & ~TAG_MASK_32)
-                                             | (reg_raw_data[dst_reg_idx] & TAG_MASK_32);
+                    reg_unit_select[dst_reg_idx] <= 1'b1;
+                    reg_unit_write[dst_reg_idx] <= 1'b1;
+                    reg_in_data[dst_reg_idx] <= (resolved_src & ~TAG_MASK_32)
+                                              | (reg_raw_data[dst_reg_idx] & TAG_MASK_32);
                   end
                   REG_TAG: begin
-                    reg_unit_select[dst_reg_idx] = 1'b1;
-                    reg_unit_write[dst_reg_idx] = 1'b1;
-                    reg_in_data[dst_reg_idx] = (reg_raw_data[dst_reg_idx] & ~TAG_MASK_32)
-                                             | (src_value & TAG_MASK_32);
+                    reg_unit_select[dst_reg_idx] <= 1'b1;
+                    reg_unit_write[dst_reg_idx] <= 1'b1;
+                    reg_in_data[dst_reg_idx] <= (reg_raw_data[dst_reg_idx] & ~TAG_MASK_32)
+                                              | (resolved_src & TAG_MASK_32);
                   end
                   REG_DEREF: begin
-                    data_bus.addr = (reg_raw_data[dst_reg_idx] & ~TAG_MASK_32)
-                                  + {29'b0, dst_deref_offset};
-                    data_bus.write_data = src_value;
-                    data_bus.wstrb = 4'b1111;
-                    data_bus.valid = 1'b1;
+                    data_bus.addr <= (reg_raw_data[dst_reg_idx] & ~TAG_MASK_32)
+                                   + {29'b0, dst_deref_offset};
+                    data_bus.write_data <= resolved_src;
+                    data_bus.wstrb <= 4'b1111;
+                    data_bus.valid <= 1'b1;
                   end
                 endcase
-                done_o = 1'b1;
-                exec_state = EXEC_START_SRC;
+                done_o <= 1'b1;
+                exec_state <= EXEC_START_SRC;
               end
               UNIT_ALU_LEFT: begin
-                alu_in_data_a[dst_immediate_i[2:0]] = src_value;
-                done_o = 1'b1;
-                exec_state = EXEC_START_SRC;
+                alu_in_data_a[dst_immediate_i[2:0]] <= resolved_src;
+                done_o <= 1'b1;
+                exec_state <= EXEC_START_SRC;
               end
               UNIT_ALU_RIGHT: begin
-                alu_in_data_b[dst_immediate_i[2:0]] = src_value;
-                done_o = 1'b1;
-                exec_state = EXEC_START_SRC;
+                alu_in_data_b[dst_immediate_i[2:0]] <= resolved_src;
+                done_o <= 1'b1;
+                exec_state <= EXEC_START_SRC;
               end
               UNIT_ALU_OPERATOR: begin
-                alu_operation[dst_immediate_i[2:0]] = ALU_OPERATOR'(src_value);
-                done_o = 1'b1;
-                exec_state = EXEC_START_SRC;
+                alu_operation[dst_immediate_i[2:0]] <= ALU_OPERATOR'(resolved_src);
+                done_o <= 1'b1;
+                exec_state <= EXEC_START_SRC;
               end
               UNIT_PC: begin
-                pc_write_o = src_value;
-                pc_write_en_o = 1'b1;
-                done_o = 1'b1;
-                exec_state = EXEC_START_SRC;
+                pc_write_o <= resolved_src;
+                pc_write_en_o <= 1'b1;
+                done_o <= 1'b1;
+                exec_state <= EXEC_START_SRC;
               end
               UNIT_COND: begin
-                cond_reg = (src_value != 32'b0);
-                done_o = 1'b1;
-                exec_state = EXEC_START_SRC;
+                cond_reg <= (resolved_src != 32'b0);
+                done_o <= 1'b1;
+                exec_state <= EXEC_START_SRC;
               end
               UNIT_PC_COND: begin
                 if (cond_reg) begin
-                  pc_write_o = src_value;
-                  pc_write_en_o = 1'b1;
+                  pc_write_o <= resolved_src;
+                  pc_write_en_o <= 1'b1;
                 end
-                done_o = 1'b1;
-                exec_state = EXEC_START_SRC;
+                done_o <= 1'b1;
+                exec_state <= EXEC_START_SRC;
               end
               UNIT_NONE: begin
-                done_o = 1'b1;
-                exec_state = EXEC_START_SRC;
+                done_o <= 1'b1;
+                exec_state <= EXEC_START_SRC;
               end
               default: begin
                 // Destinations needing extra cycles (memory, stack) go
                 // through the EXEC_START_DST state on the next cycle.
-                exec_state = EXEC_START_DST;
+                exec_state <= EXEC_START_DST;
               end
             endcase
           end
@@ -407,22 +437,26 @@ module execute (
         EXEC_SRC_MEM_RETRIEVE: begin
           if (data_bus.ready) begin
             // Extract the requested byte/halfword/word and zero-extend.
-            src_value = extract_read(data_bus.read_data, src_width, src_byte_offset);
-            data_bus.valid = 1'b0;
-            exec_state = EXEC_START_DST;
+            src_value <= extract_read(data_bus.read_data, src_width, src_byte_offset);
+            data_bus.valid <= 1'b0;
+            exec_state <= EXEC_START_DST;
           end
         end
         EXEC_SRC_STACK_WAIT: begin
           // Clear stack control signals after first cycle
-          stack_push = 1'b0;
-          stack_pop = 1'b0;
-          stack_index_read = 1'b0;
-          stack_index_write = 1'b0;
+          stack_push <= 1'b0;
+          stack_pop <= 1'b0;
+          stack_index_read <= 1'b0;
+          stack_index_write <= 1'b0;
 
-          // Wait for stack operation to complete (single cycle for register-based stacks)
-          if (stack_ready) begin
-            src_value  = stack_data_out;
-            exec_state = EXEC_START_DST;
+          // Allow one cycle for stack_unit to consume the command before
+          // sampling ready/data on the following cycle.
+          if (!stack_wait_armed) begin
+            stack_wait_armed <= 1'b1;
+          end else if (stack_ready) begin
+            src_value <= stack_data_out;
+            stack_wait_armed <= 1'b0;
+            exec_state <= EXEC_START_DST;
           end
         end
         // Destination writeback consumes the resolved source value and applies
@@ -432,124 +466,118 @@ module execute (
             UNIT_REGISTER: begin
               case (dst_reg_mode)
                 REG_RAW: begin
-                  reg_unit_select[dst_reg_idx] = 1'b1;
-                  reg_unit_write[dst_reg_idx] = 1'b1;
-                  reg_in_data[dst_reg_idx] = src_value;
+                  reg_unit_select[dst_reg_idx] <= 1'b1;
+                  reg_unit_write[dst_reg_idx] <= 1'b1;
+                  reg_in_data[dst_reg_idx] <= src_value;
                 end
                 REG_VALUE: begin
                   // Preserve tag bits, replace payload.
-                  reg_unit_select[dst_reg_idx] = 1'b1;
-                  reg_unit_write[dst_reg_idx] = 1'b1;
-                  reg_in_data[dst_reg_idx] = (src_value & ~TAG_MASK_32)
-                                           | (reg_raw_data[dst_reg_idx] & TAG_MASK_32);
+                  reg_unit_select[dst_reg_idx] <= 1'b1;
+                  reg_unit_write[dst_reg_idx] <= 1'b1;
+                  reg_in_data[dst_reg_idx] <= (src_value & ~TAG_MASK_32)
+                                            | (reg_raw_data[dst_reg_idx] & TAG_MASK_32);
                 end
                 REG_TAG: begin
                   // Preserve payload, replace tag bits.
-                  reg_unit_select[dst_reg_idx] = 1'b1;
-                  reg_unit_write[dst_reg_idx] = 1'b1;
-                  reg_in_data[dst_reg_idx] = (reg_raw_data[dst_reg_idx] & ~TAG_MASK_32)
-                                           | (src_value & TAG_MASK_32);
+                  reg_unit_select[dst_reg_idx] <= 1'b1;
+                  reg_unit_write[dst_reg_idx] <= 1'b1;
+                  reg_in_data[dst_reg_idx] <= (reg_raw_data[dst_reg_idx] & ~TAG_MASK_32)
+                                            | (src_value & TAG_MASK_32);
                 end
                 REG_DEREF: begin
                   // Store src_value to memory at (reg & ~TAG_MASK) + offset.
-                  data_bus.addr = (reg_raw_data[dst_reg_idx] & ~TAG_MASK_32)
-                                + {29'b0, dst_deref_offset};
-                  data_bus.write_data = src_value;
-                  data_bus.wstrb = 4'b1111;
-                  data_bus.valid = 1'b1;
+                  data_bus.addr <= (reg_raw_data[dst_reg_idx] & ~TAG_MASK_32)
+                                 + {29'b0, dst_deref_offset};
+                  data_bus.write_data <= src_value;
+                  data_bus.wstrb <= 4'b1111;
+                  data_bus.valid <= 1'b1;
                 end
               endcase
-              done_o = 1'b1;
-              exec_state = EXEC_START_SRC;
+              done_o <= 1'b1;
+              exec_state <= EXEC_START_SRC;
             end
             UNIT_ALU_LEFT: begin
               // Writing ALU_LEFT/RIGHT/OPERATOR configures an ALU lane.
-              alu_in_data_a[dst_immediate_i[2:0]] = src_value;
-              begin
-                done_o = 1'b1;
-                exec_state = EXEC_START_SRC;
-              end
+              alu_in_data_a[dst_immediate_i[2:0]] <= src_value;
+              done_o <= 1'b1;
+              exec_state <= EXEC_START_SRC;
             end
             UNIT_ALU_RIGHT: begin
-              alu_in_data_b[dst_immediate_i[2:0]] = src_value;
-              begin
-                done_o = 1'b1;
-                exec_state = EXEC_START_SRC;
-              end
+              alu_in_data_b[dst_immediate_i[2:0]] <= src_value;
+              done_o <= 1'b1;
+              exec_state <= EXEC_START_SRC;
             end
             UNIT_ALU_OPERATOR: begin
-              alu_operation[dst_immediate_i[2:0]] = ALU_OPERATOR'(src_value);
-              begin
-                done_o = 1'b1;
-                exec_state = EXEC_START_SRC;
-              end
+              alu_operation[dst_immediate_i[2:0]] <= ALU_OPERATOR'(src_value);
+              done_o <= 1'b1;
+              exec_state <= EXEC_START_SRC;
             end
             UNIT_MEMORY_OPERAND, UNIT_MEMORY_IMMEDIATE, UNIT_REGISTER_POINTER: begin
               case (dst_unit_i)
-                UNIT_MEMORY_OPERAND: data_bus.addr = dst_operand_i;
-                UNIT_MEMORY_IMMEDIATE: data_bus.addr = {20'b0, dst_immediate_i};
+                UNIT_MEMORY_OPERAND: data_bus.addr <= dst_operand_i;
+                UNIT_MEMORY_IMMEDIATE: data_bus.addr <= {20'b0, dst_immediate_i};
                 UNIT_REGISTER_POINTER: begin
-                  reg_unit_select[dst_immediate_i[4:0]] = 1'b1;
-                  data_bus.addr = reg_out_data[dst_immediate_i[4:0]];
+                  reg_unit_select[dst_immediate_i[4:0]] <= 1'b1;
+                  data_bus.addr <= reg_out_data[dst_immediate_i[4:0]];
                 end
-                default: data_bus.addr = 32'b0;
+                default: data_bus.addr <= 32'b0;
               endcase
 
-              data_bus.valid = 1'b1;
+              data_bus.valid <= 1'b1;
               // For sub-word writes, shift data into the correct byte lane(s).
               // Word writes pass data and strobes through unchanged.
               if (dst_width == ACCESS_WORD) begin
-                data_bus.write_data = src_value;
-                data_bus.wstrb = 4'b1111;
+                data_bus.write_data <= src_value;
+                data_bus.wstrb <= 4'b1111;
               end else begin
-                data_bus.write_data = src_value << (dst_byte_offset * 8);
-                data_bus.wstrb = width_to_wstrb(dst_width, dst_byte_offset);
+                data_bus.write_data <= src_value << (dst_byte_offset * 8);
+                data_bus.wstrb <= width_to_wstrb(dst_width, dst_byte_offset);
               end
-              begin
-                done_o = 1'b1;
-                exec_state = EXEC_START_SRC;
-              end
+              done_o <= 1'b1;
+              exec_state <= EXEC_START_SRC;
             end
             UNIT_STACK_PUSH_POP: begin
               // Push writes src_value to the selected stack.
-              stack_select = dst_immediate_i[2:0];  // Stack ID from bits 2:0
-              stack_data_in = src_value;
-              stack_push = 1'b1;
-              exec_state = EXEC_DST_STACK_WAIT;
+              stack_select <= dst_immediate_i[2:0];  // Stack ID from bits 2:0
+              stack_data_in <= src_value;
+              stack_push <= 1'b1;
+              stack_wait_armed <= 1'b0;
+              exec_state <= EXEC_DST_STACK_WAIT;
             end
             UNIT_STACK_INDEX: begin
               // Indexed writes implement poke-like behavior.
-              stack_select = dst_immediate_i[2:0];     // Stack ID from bits 2:0
-              stack_offset = dst_immediate_i[8:3];     // Offset from bits 8:3 (6 bits)
-              stack_data_in = src_value;
-              stack_index_write = 1'b1;
-              exec_state = EXEC_DST_STACK_WAIT;
+              stack_select <= dst_immediate_i[2:0];     // Stack ID from bits 2:0
+              stack_offset <= dst_immediate_i[8:3];     // Offset from bits 8:3 (6 bits)
+              stack_data_in <= src_value;
+              stack_index_write <= 1'b1;
+              stack_wait_armed <= 1'b0;
+              exec_state <= EXEC_DST_STACK_WAIT;
             end
             UNIT_PC: begin
               // Unconditional jump: set PC to src_value.
-              pc_write_o = src_value;
-              pc_write_en_o = 1'b1;
-              done_o = 1'b1;
-              exec_state = EXEC_START_SRC;
+              pc_write_o <= src_value;
+              pc_write_en_o <= 1'b1;
+              done_o <= 1'b1;
+              exec_state <= EXEC_START_SRC;
             end
             UNIT_COND: begin
               // Write condition register: nonzero → 1, zero → 0.
-              cond_reg = (src_value != 32'b0);
-              done_o = 1'b1;
-              exec_state = EXEC_START_SRC;
+              cond_reg <= (src_value != 32'b0);
+              done_o <= 1'b1;
+              exec_state <= EXEC_START_SRC;
             end
             UNIT_PC_COND: begin
               // Conditional jump: set PC to src_value only if cond_reg is set.
               if (cond_reg) begin
-                pc_write_o = src_value;
-                pc_write_en_o = 1'b1;
+                  pc_write_o <= src_value;
+                  pc_write_en_o <= 1'b1;
               end
-              done_o = 1'b1;
-              exec_state = EXEC_START_SRC;
+              done_o <= 1'b1;
+              exec_state <= EXEC_START_SRC;
             end
             default: begin
-              done_o = 1'b1;
-              exec_state = EXEC_START_SRC;
+              done_o <= 1'b1;
+              exec_state <= EXEC_START_SRC;
             end
 
           endcase
@@ -557,15 +585,19 @@ module execute (
         end
         EXEC_DST_STACK_WAIT: begin
           // Clear the one-cycle stack command strobes while waiting for ready.
-          stack_push = 1'b0;
-          stack_pop = 1'b0;
-          stack_index_read = 1'b0;
-          stack_index_write = 1'b0;
+          stack_push <= 1'b0;
+          stack_pop <= 1'b0;
+          stack_index_read <= 1'b0;
+          stack_index_write <= 1'b0;
 
-          // Wait for stack operation to complete (single cycle for register-based stacks)
-          if (stack_ready) begin
-            done_o = 1'b1;
-            exec_state = EXEC_START_SRC;
+          // Allow one cycle for stack_unit to consume the command before
+          // checking for completion on the following cycle.
+          if (!stack_wait_armed) begin
+            stack_wait_armed <= 1'b1;
+          end else if (stack_ready) begin
+            stack_wait_armed <= 1'b0;
+            done_o <= 1'b1;
+            exec_state <= EXEC_START_SRC;
           end
         end
       endcase
