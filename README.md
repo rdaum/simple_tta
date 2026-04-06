@@ -98,15 +98,21 @@ for encoding details.
 
 Each ALU lane holds a left operand (A), right operand (B), and an
 operator. You configure a lane by moving values into its inputs and
-operator, then read the result back. ALU results are combinational
-— available immediately with no extra clock cycle. The 16
-operations are:
+operator, then read the result back. Most operations are
+combinational — available immediately with no extra clock cycle.
+The 16 operations are:
 
 `NOP`, `ADD`, `SUB`, `MUL`, `DIV`, `MOD`, `EQL`, `SL` (shift left),
 `SR` (shift right), `SRA` (arithmetic shift right), `NOT` (unary,
 B ignored), `AND`, `OR`, `XOR`, `GT`, `LT`
 
 Comparisons (`EQL`, `GT`, `LT`) produce 0 or 1.
+
+`MUL`, `DIV`, and `MOD` are handled by a shared multi-cycle unit
+(32 cycles each) rather than combinational logic, keeping the ALU
+lanes small. A single muldiv unit is shared across all 8 lanes —
+the result is computed when the lane's result port is read. The ISA
+encoding is unchanged; the only difference is timing.
 
 ### Branching
 
@@ -325,6 +331,7 @@ warm (fetch latency hidden).
 | reg → reg           | 2      | Fused src+dst                   |
 | imm → ALU input/op  | 2      | Fused src+dst                   |
 | ALU result → reg    | 2      | Combinational ALU, fused        |
+| MUL/DIV/MOD result  | ~34    | 32-cycle multi-cycle unit       |
 | reg → mem (write)   | 3      | Fire-and-forget bus write       |
 | mem → reg (read)    | 4      | Bus read wait state             |
 | abs_operand → reg   | 2      | 2-word instruction, fused       |
@@ -339,6 +346,27 @@ The common case — register/immediate/ALU moves — is 2 cycles.
 Memory and stack operations pay extra for bus or stack handshakes.
 With the 2-entry instruction queue, the fetch cost is fully hidden
 for sequential code; branches stall the fetch until resolved.
+
+### Resource utilization
+
+Gate counts from Yosys synthesis (technology-mapped cells,
+excluding block RAM):
+
+| Module             | Cells  | Notes                              |
+|--------------------|-------:|------------------------------------|
+| execute            | 12,300 | Main FSM, muxing, bus control      |
+| alu_unit ×8        | 13,500 | 8 combinational ALU lanes          |
+| muldiv_unit        |  1,900 | Shared multi-cycle MUL/DIV/MOD     |
+| sequencer          |  2,900 | Instruction queue + fetch FSM      |
+| stack_unit         |  2,000 | 8×64-word stack controller         |
+| barrier_unit       |    330 | 32-entry GC write barrier FIFO     |
+| register_unit ×32  |  1,000 | 32 registers (flip-flops)          |
+| **Total**          | **~34k** |                                  |
+
+These counts are for the `tta` core only (excluding the FPGA
+wrapper and boot ROM). The design fits comfortably on a Xilinx
+7-series part like the CMod A35T (33,280 LUTs), with stack and
+register memories mapping to block RAM.
 
 ### Project structure
 

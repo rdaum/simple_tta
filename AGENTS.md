@@ -8,7 +8,7 @@ Cargo workspace with two crates:
 
 HDL sources live in `rtl/`, with top-level simulation wrappers `tta_tb.sv` and `simtop.sv` at the repo root.
 
-RTL modules: `decoder.sv` (combinational), `register_unit.sv`, `alu_unit.sv` (combinational), `stack_unit.sv`, `barrier_unit.sv` (write barrier FIFO), `blkram.sv`, `sequencer.sv` (instruction queue + prefetch), `execute.sv` (main FSM), `tta.sv` (top-level core), `cmod_a35t_top.sv` (FPGA wrapper). Shared definitions in `common.vh`.
+RTL modules: `decoder.sv` (combinational), `register_unit.sv`, `alu_unit.sv` (combinational, no MUL/DIV/MOD), `muldiv_unit.sv` (multi-cycle multiply/divide, 32 cycles), `stack_unit.sv`, `barrier_unit.sv` (write barrier FIFO), `blkram.sv`, `sequencer.sv` (instruction queue + prefetch), `execute.sv` (main FSM), `tta.sv` (top-level core), `cmod_a35t_top.sv` (FPGA wrapper). Shared definitions in `common.vh`.
 
 ## Build, Test, and Development Commands
 Use Cargo for day-to-day work:
@@ -21,7 +21,7 @@ Use Cargo for day-to-day work:
 
 HDL verification (not run by cargo):
 
-- `verilator --lint-only -Wall -sv -Irtl rtl/common.vh rtl/decoder.sv rtl/register_unit.sv rtl/alu_unit.sv rtl/stack_unit.sv rtl/barrier_unit.sv rtl/blkram.sv rtl/sequencer.sv rtl/execute.sv rtl/tta.sv rtl/cmod_a35t_top.sv --top-module cmod_a35t_top` — lint check, must produce zero warnings.
+- `verilator --lint-only -Wall -sv -Irtl rtl/common.vh rtl/decoder.sv rtl/register_unit.sv rtl/alu_unit.sv rtl/muldiv_unit.sv rtl/stack_unit.sv rtl/barrier_unit.sv rtl/blkram.sv rtl/sequencer.sv rtl/execute.sv rtl/tta.sv rtl/cmod_a35t_top.sv --top-module cmod_a35t_top` — lint check, must produce zero warnings.
 - `yosys -p "read_verilog -sv rtl/common.vh rtl/decoder.sv ... rtl/cmod_a35t_top.sv; synth -top cmod_a35t_top"` — synthesis check (slow, ~1-2 min). The RTL avoids SystemVerilog features Yosys 0.33 doesn't support (no interfaces, no user types in ports, no `return` in functions).
 
 ## Coding Style & Naming Conventions
