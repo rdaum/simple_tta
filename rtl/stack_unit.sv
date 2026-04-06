@@ -200,4 +200,4 @@ module stack_unit (
     end
   end
 
-endmodule : stack_unit
+endmodule

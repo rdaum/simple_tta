@@ -13,36 +13,63 @@ module simtop (
     output wire uart_txd_o
 );
 
-    bus_if bootmem_bus();
+    // Instruction bus wires (sequencer ↔ blkram)
+    wire [3:0]  ibs_wstrb;
+    wire [31:0] ibs_write_data;
+    wire [31:0] ibs_addr;
+    wire        ibs_valid;
+    wire        ibs_instr;
+    wire        ibs_ready;
+    wire [31:0] ibs_read_data;
+
     blkram#(
         .INIT_FILE("bootmem.mem"),
         .RAM_DEPTH(12288)
     ) bootmem(
         .clk_i(sysclk_i),
         .rst_i(rst_i),
-
-        .data_bus(bootmem_bus.slave)
+        .bus_wstrb_i(ibs_wstrb),
+        .bus_write_data_i(ibs_write_data),
+        .bus_addr_i(ibs_addr),
+        .bus_valid_i(ibs_valid),
+        .bus_instr_i(ibs_instr),
+        .bus_ready_o(ibs_ready),
+        .bus_read_data_o(ibs_read_data)
     );
 
-    bus_if data_bus();
-    wire instr_done_unused;
-    always_comb begin
-        data_bus.read_data = sram_data_i;
-        data_bus.ready = sram_ready_i;
-        sram_data_o = data_bus.write_data;
-        sram_valid_o = data_bus.valid;
-        sram_wstrb_o = data_bus.wstrb;
-        sram_addr_o = data_bus.addr[18:0];
-    end
+    // Data bus wires (execute ↔ SRAM)
+    wire [3:0]  dbs_wstrb;
+    wire [31:0] dbs_write_data;
+    wire [31:0] dbs_addr;
+    wire        dbs_valid;
+
+    assign sram_data_o  = dbs_write_data;
+    assign sram_valid_o = dbs_valid;
+    assign sram_wstrb_o = dbs_wstrb;
+    assign sram_addr_o  = dbs_addr[18:0];
 
     assign uart_txd_o = uart_rxd_i;
 
     tta tta(
         .rst_i(rst_i),
         .clk_i(sysclk_i),
-        .instr_done_o(instr_done_unused),
-        .instr_bus(bootmem_bus),
-        .data_bus(data_bus)
+        .instr_done_o(),
+        // Instruction bus → blkram
+        .instr_wstrb_o(ibs_wstrb),
+        .instr_write_data_o(ibs_write_data),
+        .instr_addr_o(ibs_addr),
+        .instr_valid_o(ibs_valid),
+        .instr_instr_o(ibs_instr),
+        .instr_ready_i(ibs_ready),
+        .instr_read_data_i(ibs_read_data),
+        // Data bus → SRAM
+        .data_wstrb_o(dbs_wstrb),
+        .data_write_data_o(dbs_write_data),
+        .data_addr_o(dbs_addr),
+        .data_valid_o(dbs_valid),
+        .data_instr_o(),
+        .data_ready_i(sram_ready_i),
+        .data_read_data_i(sram_data_i)
     );
 
 endmodule : simtop

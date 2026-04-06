@@ -17,13 +17,22 @@ module execute (
     input wire clk_i,                   // System clock
     input wire rst_i,                   // Synchronous reset (active high)
     input wire [31:0] pc_i,             // Current program counter (for UNIT_PC reads)
-    input Unit src_unit_i,              // Source unit selector (from decoder)
+    input logic [3:0] src_unit_i,       // Source unit selector (from decoder)
     input logic [11:0] src_immediate_i, // Source immediate field
     input logic [31:0] src_operand_i,   // Source 32-bit operand (from sequencer)
-    input Unit dst_unit_i,              // Destination unit selector (from decoder)
+    input logic [3:0] dst_unit_i,       // Destination unit selector (from decoder)
     input logic [11:0] dst_immediate_i, // Destination immediate field
     input logic [31:0] dst_operand_i,   // Destination 32-bit operand (from sequencer)
-    bus_if.master data_bus,             // Data memory bus (loads and stores)
+
+    // Data memory bus (explicit ports replacing bus_if.master)
+    output logic [3:0]  data_wstrb_o,
+    output logic [31:0] data_write_data_o,
+    output logic [31:0] data_addr_o,
+    output logic        data_valid_o,
+    output logic        data_instr_o,
+    input  logic        data_ready_i,
+    input  logic [31:0] data_read_data_i,
+
     output logic [31:0] pc_write_o,     // PC value for jumps (to sequencer)
     output logic        pc_write_en_o,  // High to override PC (jump taken)
     output logic done_o,                // Pulses high when the move is complete
@@ -33,31 +42,40 @@ module execute (
     output wire         instr_accept_o  // Execute is consuming the instruction this cycle
 );
   // Architectural register file: 32 independent 32-bit cells.
-  logic reg_unit_select[`NUM_REGISTERS-1:0];
-  logic reg_unit_write[`NUM_REGISTERS-1:0];
-  logic [31:0] reg_in_data[`NUM_REGISTERS-1:0];
-  logic [31:0] reg_raw_data[`NUM_REGISTERS-1:0];  // Combinational read for tagged ops
-  register_unit register_units[`NUM_REGISTERS-1:0] (
-      .rst_i    (rst_i),
-      .clk_i    (clk_i),
-      .sel_i    (reg_unit_select),
-      .wstrb_i  (reg_unit_write),
-      .data_i   (reg_in_data),
-      .data_raw_o(reg_raw_data)
-  );
+  reg reg_unit_select[0:`NUM_REGISTERS-1];
+  reg reg_unit_write[0:`NUM_REGISTERS-1];
+  reg [31:0] reg_in_data[0:`NUM_REGISTERS-1];
+  wire [31:0] reg_raw_data[0:`NUM_REGISTERS-1];
+  genvar gi;
+  generate
+    for (gi = 0; gi < `NUM_REGISTERS; gi = gi + 1) begin : gen_regs
+      register_unit ru (
+          .rst_i    (rst_i),
+          .clk_i    (clk_i),
+          .sel_i    (reg_unit_select[gi]),
+          .wstrb_i  (reg_unit_write[gi]),
+          .data_i   (reg_in_data[gi]),
+          .data_raw_o(reg_raw_data[gi])
+      );
+    end
+  endgenerate
 
   // ALU bank: 8 independently addressable compute lanes.
   // Results are combinational — available immediately from stored operands.
-  logic [31:0] alu_in_data_a[`NUM_ALUS-1:0];
-  logic [31:0] alu_in_data_b[`NUM_ALUS-1:0];
-  logic [31:0] alu_out_data[`NUM_ALUS-1:0];
-  ALU_OPERATOR alu_operation[`NUM_ALUS-1:0];
-  alu_unit alu_unit[`NUM_ALUS-1:0] (
-      .oper_i(alu_operation),
-      .a_data_i(alu_in_data_a),
-      .b_data_i(alu_in_data_b),
-      .data_raw_o(alu_out_data)
-  );
+  reg [31:0] alu_in_data_a[0:`NUM_ALUS-1];
+  reg [31:0] alu_in_data_b[0:`NUM_ALUS-1];
+  wire [31:0] alu_out_data[0:`NUM_ALUS-1];
+  reg [3:0] alu_operation[0:`NUM_ALUS-1];
+  generate
+    for (gi = 0; gi < `NUM_ALUS; gi = gi + 1) begin : gen_alus
+      alu_unit au (
+          .oper_i(alu_operation[gi]),
+          .a_data_i(alu_in_data_a[gi]),
+          .b_data_i(alu_in_data_b[gi]),
+          .data_raw_o(alu_out_data[gi])
+      );
+    end
+  endgenerate
 
   // Shared stack unit implementing 8 logical stacks.
   logic [2:0] stack_select;
@@ -95,7 +113,7 @@ module execute (
   //                                         └─→ EXEC_DST_STACK_WAIT ──→ done
   typedef enum {
     EXEC_START_SRC,       // Begin source resolution (fuses dst for immediate moves)
-    EXEC_SRC_MEM_RETRIEVE,// Wait for data_bus.ready on a memory read
+    EXEC_SRC_MEM_RETRIEVE,// Wait for data_ready_i on a memory read
     EXEC_SRC_STACK_WAIT,  // Wait for stack_ready after pop / peek
     EXEC_START_DST,       // Route src_value to the destination unit
     EXEC_DST_STACK_WAIT   // Wait for stack_ready after push / poke
@@ -123,35 +141,35 @@ module execute (
   // immediate field is not used as the primary address. MEMORY_IMMEDIATE
   // and UNIT_REGISTER always use word access (their immediate bits have
   // different meanings).
-  AccessWidth src_width, dst_width;
+  logic [1:0] src_width, dst_width;
   logic [1:0] src_byte_offset, dst_byte_offset;
   always_comb begin
     if (src_unit_i == UNIT_MEMORY_IMMEDIATE || src_unit_i == UNIT_REGISTER) begin
       src_width       = ACCESS_WORD;
       src_byte_offset = 2'b00;
     end else begin
-      src_width       = AccessWidth'(src_immediate_i[11:10]);
+      src_width       = src_immediate_i[11:10];
       src_byte_offset = src_immediate_i[9:8];
     end
     if (dst_unit_i == UNIT_MEMORY_IMMEDIATE || dst_unit_i == UNIT_REGISTER) begin
       dst_width       = ACCESS_WORD;
       dst_byte_offset = 2'b00;
     end else begin
-      dst_width       = AccessWidth'(dst_immediate_i[11:10]);
+      dst_width       = dst_immediate_i[11:10];
       dst_byte_offset = dst_immediate_i[9:8];
     end
   end
 
   // Register access mode helpers: decode mode, index, and DEREF offset
   // from the immediate field of UNIT_REGISTER instructions.
-  RegAccessMode src_reg_mode, dst_reg_mode;
+  logic [1:0] src_reg_mode, dst_reg_mode;
   logic [4:0]   src_reg_idx,  dst_reg_idx;
   logic [2:0]   src_deref_offset, dst_deref_offset;
   always_comb begin
-    src_reg_mode     = RegAccessMode'(src_immediate_i[6:5]);
+    src_reg_mode     = src_immediate_i[6:5];
     src_reg_idx      = src_immediate_i[4:0];
     src_deref_offset = src_immediate_i[9:7];
-    dst_reg_mode     = RegAccessMode'(dst_immediate_i[6:5]);
+    dst_reg_mode     = dst_immediate_i[6:5];
     dst_reg_idx      = dst_immediate_i[4:0];
     dst_deref_offset = dst_immediate_i[9:7];
   end
@@ -170,33 +188,43 @@ module execute (
   end
 
   // Compute write strobes from access width and byte offset.
-  function automatic logic [3:0] width_to_wstrb(AccessWidth w, logic [1:0] off);
+  function automatic [3:0] width_to_wstrb;
+    input [1:0] w;
+    input [1:0] off;
     case (w)
-      ACCESS_BYTE:     return 4'b0001 << off;
-      ACCESS_HALFWORD: return 4'b0011 << off;
-      default:         return 4'b1111;  // ACCESS_WORD / reserved
+      ACCESS_BYTE:     width_to_wstrb = 4'b0001 << off;
+      ACCESS_HALFWORD: width_to_wstrb = 4'b0011 << off;
+      default:         width_to_wstrb = 4'b1111;
     endcase
   endfunction
 
   // Extract and zero-extend sub-word data from a 32-bit bus read.
   /* verilator lint_off UNUSEDSIGNAL */
-  function automatic logic [31:0] extract_read(logic [31:0] data, AccessWidth w, logic [1:0] off);
-    logic [31:0] shifted;
-    shifted = data >> (off * 8);
-    case (w)
-      ACCESS_BYTE:     return {24'b0, shifted[7:0]};
-      ACCESS_HALFWORD: return {16'b0, shifted[15:0]};
-      default:         return data;  // ACCESS_WORD
-    endcase
+  function automatic [31:0] extract_read;
+    input [31:0] data;
+    input [1:0] w;
+    input [1:0] off;
+    reg [31:0] shifted;
+    begin
+      shifted = data >> (off * 8);
+      case (w)
+        ACCESS_BYTE:     extract_read = {24'b0, shifted[7:0]};
+        ACCESS_HALFWORD: extract_read = {16'b0, shifted[15:0]};
+        default:         extract_read = data;
+      endcase
+    end
   endfunction
   /* verilator lint_on UNUSEDSIGNAL */
 
+  integer ii;
   always @(posedge clk_i) begin
     if (rst_i) begin
-      reg_unit_select <= '{default: 1'b0};
-      reg_unit_write <= '{default: 1'b0};
-
-      alu_operation <= '{default: ALU_NOP};
+      for (ii = 0; ii < `NUM_REGISTERS; ii = ii + 1) begin
+        reg_unit_select[ii] <= 1'b0;
+        reg_unit_write[ii] <= 1'b0;
+      end
+      for (ii = 0; ii < `NUM_ALUS; ii = ii + 1)
+        alu_operation[ii] <= 4'h0;
 
       // Initialize stack signals
       stack_select <= 3'b000;
@@ -215,11 +243,11 @@ module execute (
       pc_write_o <= 32'b0;
       pc_write_en_o <= 1'b0;
       exec_active <= 1'b0;
-      data_bus.valid <= 1'b0;
-      data_bus.instr <= 1'b0;
-      data_bus.wstrb <= 4'b0000;
-      data_bus.addr <= 32'b0;
-      data_bus.write_data <= 32'b0;
+      data_valid_o <= 1'b0;
+      data_instr_o <= 1'b0;
+      data_wstrb_o <= 4'b0000;
+      data_addr_o <= 32'b0;
+      data_write_data_o <= 32'b0;
 
       done_o <= 1'b0;
     end else begin
@@ -227,7 +255,9 @@ module execute (
       // combinational from the queue head) AND while exec_active for
       // multi-cycle operations. This eliminates the 1-cycle accept
       // overhead — fused moves complete on the accept cycle itself.
-      automatic logic run_execute = (exec_active || instr_accept_o) && !done_o;
+      // run_execute is combinational within this block, equivalent to a wire.
+      reg run_execute;
+      run_execute = (exec_active || instr_accept_o) && !done_o;
 
       // Auto-clear done_o and pc_write_en_o after one cycle.
       if (done_o) begin
@@ -245,22 +275,26 @@ module execute (
         EXEC_START_SRC: begin
           // src_resolved: set by immediate sources so the destination can
           // be evaluated in the same cycle (fused src+dst, no extra state).
-          automatic logic src_resolved = 1'b0;
-          automatic logic [31:0] resolved_src = 32'b0;
+          reg src_resolved;
+          reg [31:0] resolved_src;
+          src_resolved = 1'b0;
+          resolved_src = 32'b0;
           done_o <= 1'b0;
           pc_write_en_o <= 1'b0;
-          reg_unit_select <= '{default: 1'b0};
-          reg_unit_write <= '{default: 1'b0};
-          data_bus.valid <= 1'b0;
-          data_bus.wstrb <= 4'b0000;
-          data_bus.instr <= 1'b0;
+          for (ii = 0; ii < `NUM_REGISTERS; ii = ii + 1) begin
+            reg_unit_select[ii] <= 1'b0;
+            reg_unit_write[ii] <= 1'b0;
+          end
+          data_valid_o <= 1'b0;
+          data_wstrb_o <= 4'b0000;
+          data_instr_o <= 1'b0;
 
           // Clear stack signals
           stack_push <= 1'b0;
           stack_pop <= 1'b0;
           stack_index_read <= 1'b0;
           stack_index_write <= 1'b0;
-          case (src_unit_i) inside
+          case (src_unit_i)
             // Source is memory-backed, so begin a bus read.
             // Width (imm[11:10]) and byte offset (imm[9:8]) are applied
             // when the data returns in EXEC_SRC_MEM_RETRIEVE. These fields
@@ -268,14 +302,14 @@ module execute (
             // MEMORY_IMMEDIATE always does a full-word read.
             UNIT_MEMORY_OPERAND, UNIT_MEMORY_IMMEDIATE, UNIT_REGISTER_POINTER: begin
               case (src_unit_i)
-                UNIT_MEMORY_OPERAND: data_bus.addr <= src_operand_i;
-                UNIT_MEMORY_IMMEDIATE: data_bus.addr <= {20'b0, src_immediate_i};
+                UNIT_MEMORY_OPERAND: data_addr_o <= src_operand_i;
+                UNIT_MEMORY_IMMEDIATE: data_addr_o <= {20'b0, src_immediate_i};
                 UNIT_REGISTER_POINTER: begin
-                  data_bus.addr <= reg_raw_data[src_immediate_i[4:0]];
+                  data_addr_o <= reg_raw_data[src_immediate_i[4:0]];
                 end
-                default: data_bus.addr <= 32'b0;
+                default: data_addr_o <= 32'b0;
               endcase
-              data_bus.valid <= 1'b1;
+              data_valid_o <= 1'b1;
               exec_state <= EXEC_SRC_MEM_RETRIEVE;
             end
             UNIT_REGISTER: begin
@@ -297,9 +331,9 @@ module execute (
                   src_resolved = 1'b1;
                 end
                 REG_DEREF: begin
-                  data_bus.addr <= (reg_raw_data[src_reg_idx] & ~TAG_MASK_32)
+                  data_addr_o <= (reg_raw_data[src_reg_idx] & ~TAG_MASK_32)
                                  + {29'b0, src_deref_offset};
-                  data_bus.valid <= 1'b1;
+                  data_valid_o <= 1'b1;
                   exec_state <= EXEC_SRC_MEM_RETRIEVE;
                 end
               endcase
@@ -375,7 +409,7 @@ module execute (
           if (src_resolved) begin
             // Inline the EXEC_START_DST logic. For destinations that need
             // extra cycles (stack), fall back to the EXEC_START_DST state.
-            case (dst_unit_i) inside
+            case (dst_unit_i)
               UNIT_REGISTER: begin
                 case (dst_reg_mode)
                   REG_RAW: begin
@@ -396,11 +430,11 @@ module execute (
                                               | (resolved_src & TAG_MASK_32);
                   end
                   REG_DEREF: begin
-                    data_bus.addr <= (reg_raw_data[dst_reg_idx] & ~TAG_MASK_32)
+                    data_addr_o <= (reg_raw_data[dst_reg_idx] & ~TAG_MASK_32)
                                    + {29'b0, dst_deref_offset};
-                    data_bus.write_data <= resolved_src;
-                    data_bus.wstrb <= 4'b1111;
-                    data_bus.valid <= 1'b1;
+                    data_write_data_o <= resolved_src;
+                    data_wstrb_o <= 4'b1111;
+                    data_valid_o <= 1'b1;
                   end
                 endcase
                 done_o <= 1'b1;
@@ -417,7 +451,7 @@ module execute (
                 exec_state <= EXEC_START_SRC;
               end
               UNIT_ALU_OPERATOR: begin
-                alu_operation[dst_immediate_i[2:0]] <= ALU_OPERATOR'(resolved_src);
+                alu_operation[dst_immediate_i[2:0]] <= resolved_src[3:0];
                 done_o <= 1'b1;
                 exec_state <= EXEC_START_SRC;
               end
@@ -454,10 +488,10 @@ module execute (
 
         end
         EXEC_SRC_MEM_RETRIEVE: begin
-          if (data_bus.ready) begin
+          if (data_ready_i) begin
             // Extract the requested byte/halfword/word and zero-extend.
-            src_value <= extract_read(data_bus.read_data, src_width, src_byte_offset);
-            data_bus.valid <= 1'b0;
+            src_value <= extract_read(data_read_data_i, src_width, src_byte_offset);
+            data_valid_o <= 1'b0;
             exec_state <= EXEC_START_DST;
           end
         end
@@ -486,7 +520,7 @@ module execute (
         // Destination writeback consumes the resolved source value and applies
         // the instruction side effect.
         EXEC_START_DST: begin
-          case (dst_unit_i) inside
+          case (dst_unit_i)
             UNIT_REGISTER: begin
               case (dst_reg_mode)
                 REG_RAW: begin
@@ -510,11 +544,11 @@ module execute (
                 end
                 REG_DEREF: begin
                   // Store src_value to memory at (reg & ~TAG_MASK) + offset.
-                  data_bus.addr <= (reg_raw_data[dst_reg_idx] & ~TAG_MASK_32)
+                  data_addr_o <= (reg_raw_data[dst_reg_idx] & ~TAG_MASK_32)
                                  + {29'b0, dst_deref_offset};
-                  data_bus.write_data <= src_value;
-                  data_bus.wstrb <= 4'b1111;
-                  data_bus.valid <= 1'b1;
+                  data_write_data_o <= src_value;
+                  data_wstrb_o <= 4'b1111;
+                  data_valid_o <= 1'b1;
                 end
               endcase
               done_o <= 1'b1;
@@ -532,29 +566,29 @@ module execute (
               exec_state <= EXEC_START_SRC;
             end
             UNIT_ALU_OPERATOR: begin
-              alu_operation[dst_immediate_i[2:0]] <= ALU_OPERATOR'(src_value);
+              alu_operation[dst_immediate_i[2:0]] <= src_value[3:0];
               done_o <= 1'b1;
               exec_state <= EXEC_START_SRC;
             end
             UNIT_MEMORY_OPERAND, UNIT_MEMORY_IMMEDIATE, UNIT_REGISTER_POINTER: begin
               case (dst_unit_i)
-                UNIT_MEMORY_OPERAND: data_bus.addr <= dst_operand_i;
-                UNIT_MEMORY_IMMEDIATE: data_bus.addr <= {20'b0, dst_immediate_i};
+                UNIT_MEMORY_OPERAND: data_addr_o <= dst_operand_i;
+                UNIT_MEMORY_IMMEDIATE: data_addr_o <= {20'b0, dst_immediate_i};
                 UNIT_REGISTER_POINTER: begin
-                  data_bus.addr <= reg_raw_data[dst_immediate_i[4:0]];
+                  data_addr_o <= reg_raw_data[dst_immediate_i[4:0]];
                 end
-                default: data_bus.addr <= 32'b0;
+                default: data_addr_o <= 32'b0;
               endcase
 
-              data_bus.valid <= 1'b1;
+              data_valid_o <= 1'b1;
               // For sub-word writes, shift data into the correct byte lane(s).
               // Word writes pass data and strobes through unchanged.
               if (dst_width == ACCESS_WORD) begin
-                data_bus.write_data <= src_value;
-                data_bus.wstrb <= 4'b1111;
+                data_write_data_o <= src_value;
+                data_wstrb_o <= 4'b1111;
               end else begin
-                data_bus.write_data <= src_value << (dst_byte_offset * 8);
-                data_bus.wstrb <= width_to_wstrb(dst_width, dst_byte_offset);
+                data_write_data_o <= src_value << (dst_byte_offset * 8);
+                data_wstrb_o <= width_to_wstrb(dst_width, dst_byte_offset);
               end
               done_o <= 1'b1;
               exec_state <= EXEC_START_SRC;
@@ -627,4 +661,4 @@ module execute (
     end // if (exec_active)
     end // else (not reset)
   end
-endmodule : execute
+endmodule

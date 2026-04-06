@@ -15,15 +15,15 @@
 // that op_i changes, with no clock delay.
 module decoder (
     input [31:0] op_i,              // Raw instruction word to decode
-    output Unit src_unit_o,         // Decoded source unit selector
+    output logic [3:0] src_unit_o,  // Decoded source unit selector
     output logic [11:0] si_o,       // Source immediate field
-    output Unit dst_unit_o,         // Decoded destination unit selector
+    output logic [3:0] dst_unit_o,  // Decoded destination unit selector
     output logic [11:0] di_o        // Destination immediate field
 );
 
-  assign src_unit_o = Unit'(op_i[3:0]);
+  assign src_unit_o = op_i[3:0];
   assign si_o = op_i[15:4];
-  assign dst_unit_o = Unit'(op_i[19:16]);
+  assign dst_unit_o = op_i[19:16];
   assign di_o = op_i[31:20];
 
-endmodule : decoder
+endmodule

@@ -8,40 +8,36 @@
 // computed from the current operands and operator. No sel_i or clock
 // delay is needed to read the result.
 module alu_unit (
-    input ALU_OPERATOR oper_i,      // Operation selector (see ALU_OPERATOR enum)
+    input logic [3:0] oper_i,       // Operation selector (ALU_OPERATOR enum)
     input  logic [31:0] a_data_i,   // Left operand (A)
     input  logic [31:0] b_data_i,   // Right operand (B)
     output wire  [31:0] data_raw_o  // Combinational result — always valid
 );
 
   // Result is pure combinational logic from stored operands + operator.
-  function automatic logic [31:0] compute(
-    ALU_OPERATOR op, logic [31:0] a, logic [31:0] b
-  );
-    case (op)
-      ALU_NOP: return 32'b0;
-      ALU_ADD: return a + b;
-      ALU_SUB: return a - b;
-      ALU_DIV: return a / b;
-      ALU_MUL: return a * b;
-      ALU_MOD: return a % b;
-      // Comparisons zero-extend a 1-bit result to 32 bits.
-      ALU_EQL: return {31'b0, (a == b)};
-      // Shifts use only the low 5 bits of B (shift amount 0-31).
-      ALU_SL:  return a << b[4:0];
-      ALU_SR:  return a >> b[4:0];
-      ALU_SRA: return a >>> b[4:0];
-      // NOT is unary — only A is used; B is ignored.
-      ALU_NOT: return ~a;
-      ALU_AND: return a & b;
-      ALU_OR:  return a | b;
-      ALU_XOR: return a ^ b;
-      ALU_GT:  return {31'b0, (a > b)};
-      ALU_LT:  return {31'b0, (a < b)};
-      default: return 32'b0;
+  reg [31:0] result;
+  assign data_raw_o = result;
+
+  always_comb begin
+    case (oper_i)
+      ALU_NOP: result = 32'b0;
+      ALU_ADD: result = a_data_i + b_data_i;
+      ALU_SUB: result = a_data_i - b_data_i;
+      ALU_DIV: result = a_data_i / b_data_i;
+      ALU_MUL: result = a_data_i * b_data_i;
+      ALU_MOD: result = a_data_i % b_data_i;
+      ALU_EQL: result = {31'b0, (a_data_i == b_data_i)};
+      ALU_SL:  result = a_data_i << b_data_i[4:0];
+      ALU_SR:  result = a_data_i >> b_data_i[4:0];
+      ALU_SRA: result = a_data_i >>> b_data_i[4:0];
+      ALU_NOT: result = ~a_data_i;
+      ALU_AND: result = a_data_i & b_data_i;
+      ALU_OR:  result = a_data_i | b_data_i;
+      ALU_XOR: result = a_data_i ^ b_data_i;
+      ALU_GT:  result = {31'b0, (a_data_i > b_data_i)};
+      ALU_LT:  result = {31'b0, (a_data_i < b_data_i)};
+      default: result = 32'b0;
     endcase
-  endfunction
+  end
 
-  assign data_raw_o = compute(oper_i, a_data_i, b_data_i);
-
-endmodule : alu_unit
+endmodule

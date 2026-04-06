@@ -18,7 +18,6 @@ pub fn create_tta_runtime() -> Result<VerilatorRuntime> {
     let src_files = [
         Utf8Path::new("tta_tb.sv"),
         Utf8Path::new("rtl/tta.sv"),
-        Utf8Path::new("rtl/bus_if.sv"),
         Utf8Path::new("rtl/sequencer.sv"),
         Utf8Path::new("rtl/decoder.sv"),
         Utf8Path::new("rtl/execute.sv"),
@@ -42,7 +41,6 @@ pub fn create_simtop_runtime() -> Result<VerilatorRuntime> {
     let src_files = [
         Utf8Path::new("simtop.sv"),
         Utf8Path::new("rtl/tta.sv"),
-        Utf8Path::new("rtl/bus_if.sv"),
         Utf8Path::new("rtl/sequencer.sv"),
         Utf8Path::new("rtl/decoder.sv"),
         Utf8Path::new("rtl/execute.sv"),

@@ -14,8 +14,24 @@ module tta (
     input wire rst_i,           // Synchronous reset (active high)
     input wire clk_i,           // System clock
     output wire instr_done_o,   // Pulses high for one cycle when a move completes
-    bus_if.master instr_bus,    // Instruction fetch bus (read-only in practice)
-    bus_if.master data_bus      // Data load/store bus
+
+    // Instruction fetch bus
+    output logic [3:0]  instr_wstrb_o,
+    output logic [31:0] instr_write_data_o,
+    output logic [31:0] instr_addr_o,
+    output logic        instr_valid_o,
+    output logic        instr_instr_o,
+    input  logic        instr_ready_i,
+    input  logic [31:0] instr_read_data_i,
+
+    // Data bus
+    output logic [3:0]  data_wstrb_o,
+    output logic [31:0] data_write_data_o,
+    output logic [31:0] data_addr_o,
+    output logic        data_valid_o,
+    output logic        data_instr_o,
+    input  logic        data_ready_i,
+    input  logic [31:0] data_read_data_i
 );
 
   // pc is the instruction PC promoted from the queue on accept. Execute
@@ -40,7 +56,13 @@ module tta (
   sequencer sequencer (
       .clk_i(clk_i),
       .rst_i(rst_i),
-      .instr_bus(instr_bus),
+      .instr_wstrb_o(instr_wstrb_o),
+      .instr_write_data_o(instr_write_data_o),
+      .instr_addr_o(instr_addr_o),
+      .instr_valid_o_bus(instr_valid_o),
+      .instr_instr_o(instr_instr_o),
+      .instr_ready_i(instr_ready_i),
+      .instr_read_data_i(instr_read_data_i),
       .pc_o(pc),
       .op_o(op),
       .instr_valid_o(instr_valid),
@@ -55,8 +77,8 @@ module tta (
       .dbg_prefetch_op_o()
 `endif
   );
-  Unit src_unit;
-  Unit dst_unit;
+  logic [3:0] src_unit;
+  logic [3:0] dst_unit;
   logic [11:0] si;
   logic [11:0] di;
 
@@ -72,7 +94,13 @@ module tta (
       .rst_i(rst_i),
       .clk_i(clk_i),
       .pc_i(pc),
-      .data_bus(data_bus),
+      .data_wstrb_o(data_wstrb_o),
+      .data_write_data_o(data_write_data_o),
+      .data_addr_o(data_addr_o),
+      .data_valid_o(data_valid_o),
+      .data_instr_o(data_instr_o),
+      .data_ready_i(data_ready_i),
+      .data_read_data_i(data_read_data_i),
       .src_unit_i(src_unit),
       .src_immediate_i(si),
       .src_operand_i(src_operand),
@@ -86,4 +114,4 @@ module tta (
       .instr_accept_o(instr_accept)
   );
 
-endmodule : tta
+endmodule

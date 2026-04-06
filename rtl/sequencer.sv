@@ -37,7 +37,15 @@
 module sequencer (
     input wire clk_i,                   // System clock
     input wire rst_i,                   // Synchronous reset (active high)
-    bus_if.master instr_bus,            // Instruction fetch bus
+
+    // Instruction fetch bus (explicit ports replacing bus_if.master)
+    output logic [3:0]  instr_wstrb_o,
+    output logic [31:0] instr_write_data_o,
+    output logic [31:0] instr_addr_o,
+    output logic        instr_valid_o_bus,
+    output logic        instr_instr_o,
+    input  logic        instr_ready_i,
+    input  logic [31:0] instr_read_data_i,
     output logic [31:0] pc_o,           // PC of current instruction (see above)
     output logic [31:0] op_o,           // Fetched opcode word for the decoder
     output logic [31:0] src_operand_o,  // 32-bit source operand (when needed)
@@ -120,19 +128,19 @@ module sequencer (
 
   // --- Helpers ---
   /* verilator lint_off UNUSEDSIGNAL */
-  function automatic logic needs_src_op(logic [31:0] raw_op);
-    Unit su = Unit'(raw_op[3:0]);
-    return su == UNIT_MEMORY_OPERAND || su == UNIT_ABS_OPERAND;
+  function automatic needs_src_op;
+    input [31:0] raw_op;
+    needs_src_op = (raw_op[3:0] == UNIT_MEMORY_OPERAND) || (raw_op[3:0] == UNIT_ABS_OPERAND);
   endfunction
 
-  function automatic logic needs_dst_op(logic [31:0] raw_op);
-    Unit du = Unit'(raw_op[19:16]);
-    return du == UNIT_MEMORY_OPERAND || du == UNIT_ABS_OPERAND;
+  function automatic needs_dst_op;
+    input [31:0] raw_op;
+    needs_dst_op = (raw_op[19:16] == UNIT_MEMORY_OPERAND) || (raw_op[19:16] == UNIT_ABS_OPERAND);
   endfunction
 
-  function automatic logic is_control_flow(logic [31:0] raw_op);
-    Unit du = Unit'(raw_op[19:16]);
-    return du == UNIT_PC || du == UNIT_PC_COND;
+  function automatic is_control_flow;
+    input [31:0] raw_op;
+    is_control_flow = (raw_op[19:16] == UNIT_PC) || (raw_op[19:16] == UNIT_PC_COND);
   endfunction
   /* verilator lint_on UNUSEDSIGNAL */
 
@@ -154,9 +162,11 @@ module sequencer (
       rd_ptr <= 1'b0;
       fetch_stalled_on_branch <= 1'b0;
       fetch_state <= SEQ_FETCH_START;
-      instr_bus.valid <= 1'b0;
-      instr_bus.instr <= 1'b0;
-      instr_bus.addr <= 32'b0;
+      instr_valid_o_bus <= 1'b0;
+      instr_instr_o <= 1'b0;
+      instr_addr_o <= 32'b0;
+      instr_wstrb_o <= 4'b0;
+      instr_write_data_o <= 32'b0;
     end else if (pc_write_en_i) begin
       // Branch taken: flush entire queue, restart fetch from new PC.
       fetch_pc <= pc_write_i;
@@ -165,7 +175,7 @@ module sequencer (
       wr_ptr <= 1'b0;
       rd_ptr <= 1'b0;
       fetch_stalled_on_branch <= 1'b0;
-      instr_bus.valid <= 1'b0;
+      instr_valid_o_bus <= 1'b0;
       fetch_state <= SEQ_FETCH_START;
     end else begin
 
@@ -190,35 +200,35 @@ module sequencer (
       case (fetch_state)
         SEQ_FETCH_START: begin
           if ((queue_has_space || instr_accept_i) && !fetch_stalled_on_branch) begin
-            instr_bus.valid <= 1'b1;
-            instr_bus.instr <= 1'b1;
-            instr_bus.addr <= fetch_pc;
+            instr_valid_o_bus <= 1'b1;
+            instr_instr_o <= 1'b1;
+            instr_addr_o <= fetch_pc;
             fetch_state <= SEQ_FETCH_OPCODE;
           end
         end
 
         SEQ_FETCH_OPCODE: begin
-          if (instr_bus.ready) begin
-            staging_op <= instr_bus.read_data;
-            if (needs_src_op(instr_bus.read_data) || needs_dst_op(instr_bus.read_data)) begin
-              instr_bus.valid <= 1'b1;
-              instr_bus.instr <= 1'b0;
-              instr_bus.addr  <= fetch_pc_plus_1;
-              if (needs_src_op(instr_bus.read_data))
+          if (instr_ready_i) begin
+            staging_op <= instr_read_data_i;
+            if (needs_src_op(instr_read_data_i) || needs_dst_op(instr_read_data_i)) begin
+              instr_valid_o_bus <= 1'b1;
+              instr_instr_o <= 1'b0;
+              instr_addr_o  <= fetch_pc_plus_1;
+              if (needs_src_op(instr_read_data_i))
                 fetch_state <= SEQ_FETCH_SRC_OPERAND;
               else
                 fetch_state <= SEQ_FETCH_DST_OPERAND;
             end else begin
               // 1-word instruction complete. Enqueue it.
-              q_op[wr_ptr] <= instr_bus.read_data;
+              q_op[wr_ptr] <= instr_read_data_i;
               q_src_operand[wr_ptr] <= 32'b0;
               q_dst_operand[wr_ptr] <= 32'b0;
               q_pc[wr_ptr] <= fetch_pc_plus_1;
               q_valid[wr_ptr] <= 1'b1;
               wr_ptr <= ~wr_ptr;
               fetch_pc <= fetch_pc_plus_1;
-              instr_bus.valid <= 1'b0;
-              if (is_control_flow(instr_bus.read_data))
+              instr_valid_o_bus <= 1'b0;
+              if (is_control_flow(instr_read_data_i))
                 fetch_stalled_on_branch <= 1'b1;
               fetch_state <= SEQ_FETCH_START;
             end
@@ -226,23 +236,23 @@ module sequencer (
         end
 
         SEQ_FETCH_SRC_OPERAND: begin
-          if (instr_bus.ready) begin
-            staging_src_operand <= instr_bus.read_data;
+          if (instr_ready_i) begin
+            staging_src_operand <= instr_read_data_i;
             if (needs_dst_op(staging_op)) begin
               // 3-word instruction: still need dst operand.
-              instr_bus.valid <= 1'b0;
+              instr_valid_o_bus <= 1'b0;
               fetch_pc <= fetch_pc_plus_1;
               fetch_state <= SEQ_FETCH_DST_OPERAND_SETUP;
             end else begin
               // 2-word instruction complete. Enqueue it.
               q_op[wr_ptr] <= staging_op;
-              q_src_operand[wr_ptr] <= instr_bus.read_data;
+              q_src_operand[wr_ptr] <= instr_read_data_i;
               q_dst_operand[wr_ptr] <= 32'b0;
               q_pc[wr_ptr] <= fetch_pc_plus_2;
               q_valid[wr_ptr] <= 1'b1;
               wr_ptr <= ~wr_ptr;
               fetch_pc <= fetch_pc_plus_2;
-              instr_bus.valid <= 1'b0;
+              instr_valid_o_bus <= 1'b0;
               if (is_control_flow(staging_op))
                 fetch_stalled_on_branch <= 1'b1;
               fetch_state <= SEQ_FETCH_START;
@@ -251,23 +261,23 @@ module sequencer (
         end
 
         SEQ_FETCH_DST_OPERAND_SETUP: begin
-          instr_bus.addr  <= fetch_pc_plus_1;
-          instr_bus.valid <= 1'b1;
-          instr_bus.instr <= 1'b0;
+          instr_addr_o  <= fetch_pc_plus_1;
+          instr_valid_o_bus <= 1'b1;
+          instr_instr_o <= 1'b0;
           fetch_state <= SEQ_FETCH_DST_OPERAND;
         end
 
         SEQ_FETCH_DST_OPERAND: begin
-          if (instr_bus.ready) begin
+          if (instr_ready_i) begin
             // 3-word instruction complete. Enqueue it.
             q_op[wr_ptr] <= staging_op;
             q_src_operand[wr_ptr] <= staging_src_operand;
-            q_dst_operand[wr_ptr] <= instr_bus.read_data;
+            q_dst_operand[wr_ptr] <= instr_read_data_i;
             q_pc[wr_ptr] <= fetch_pc_plus_2;
             q_valid[wr_ptr] <= 1'b1;
             wr_ptr <= ~wr_ptr;
             fetch_pc <= fetch_pc_plus_2;
-            instr_bus.valid <= 1'b0;
+            instr_valid_o_bus <= 1'b0;
             if (is_control_flow(staging_op))
               fetch_stalled_on_branch <= 1'b1;
             fetch_state <= SEQ_FETCH_START;
@@ -282,4 +292,4 @@ module sequencer (
     end
   end
 
-endmodule : sequencer
+endmodule

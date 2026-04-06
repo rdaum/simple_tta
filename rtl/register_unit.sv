@@ -23,4 +23,4 @@ module register_unit (
     end
   end
 
-endmodule : register_unit
+endmodule

@@ -12,7 +12,19 @@ module blkram #(
 ) (
     input wire clk_i,               // System clock
     input wire rst_i,               // Synchronous reset (active high)
-    bus_if.slave data_bus            // Bus slave port
+
+    // Bus slave port (explicit ports)
+    input  logic [3:0]  bus_wstrb_i,
+    input  logic [31:0] bus_write_data_i,
+    /* verilator lint_off UNUSEDSIGNAL */
+    input  logic [31:0] bus_addr_i,
+    /* verilator lint_on UNUSEDSIGNAL */
+    input  logic        bus_valid_i,
+    /* verilator lint_off UNUSEDSIGNAL */
+    input  logic        bus_instr_i,
+    /* verilator lint_on UNUSEDSIGNAL */
+    output logic        bus_ready_o,
+    output logic [31:0] bus_read_data_o
 );
   (* ram_style = "block" *) reg [RAM_WIDTH-1:0] bram_reg[RAM_DEPTH-1:0];
   reg [31:0] reg_data;
@@ -50,17 +62,17 @@ module blkram #(
     end else
       case (state)
         0: begin
-          if (data_bus.valid) begin
+          if (bus_valid_i) begin
             ready_reg <= 1'b1;
             // Per-byte write strobes: each bit controls one byte lane.
-            if (data_bus.wstrb != 4'b0) begin
-              if (data_bus.wstrb[3]) bram_reg[data_bus.addr][31:24] <= data_bus.write_data[31:24];
-              if (data_bus.wstrb[2]) bram_reg[data_bus.addr][23:16] <= data_bus.write_data[23:16];
-              if (data_bus.wstrb[1]) bram_reg[data_bus.addr][15:8] <= data_bus.write_data[15:8];
-              if (data_bus.wstrb[0]) bram_reg[data_bus.addr][7:0] <= data_bus.write_data[7:0];
+            if (bus_wstrb_i != 4'b0) begin
+              if (bus_wstrb_i[3]) bram_reg[bus_addr_i][31:24] <= bus_write_data_i[31:24];
+              if (bus_wstrb_i[2]) bram_reg[bus_addr_i][23:16] <= bus_write_data_i[23:16];
+              if (bus_wstrb_i[1]) bram_reg[bus_addr_i][15:8] <= bus_write_data_i[15:8];
+              if (bus_wstrb_i[0]) bram_reg[bus_addr_i][7:0] <= bus_write_data_i[7:0];
             end
             // Simultaneous read: returns the value *before* the write on this cycle.
-            reg_data <= bram_reg[data_bus.addr];
+            reg_data <= bram_reg[bus_addr_i];
             state <= 1;
           end
         end
@@ -73,13 +85,13 @@ module blkram #(
 
   end
 
-  assign data_bus.read_data = reg_data;
-  assign data_bus.ready = ready_reg;
+  assign bus_read_data_o = reg_data;
+  assign bus_ready_o = ready_reg;
 
   //  The following function calculates the address width based on specified RAM depth
   function integer clogb2;
     input integer depth;
     for (clogb2 = 0; depth > 0; clogb2 = clogb2 + 1) depth = depth >> 1;
-  endfunction : clogb2
+  endfunction
 
-endmodule : blkram
+endmodule
