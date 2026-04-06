@@ -2,6 +2,7 @@ use marlin::verilator::{VerilatedModelConfig, VerilatorRuntime};
 use std::collections::HashMap;
 
 use tta_sim::{create_tta_runtime, instr, AccessWidth, RegMode, TtaTestbench, Unit};
+use tta_sim::dataflow::Graph;
 
 fn create_runtime() -> Result<VerilatorRuntime, Box<dyn std::error::Error>> {
     Ok(create_tta_runtime()?)
@@ -3224,6 +3225,132 @@ mod tests {
         assert_eq!(helper.get_data_memory(500), 100, "First dirty address should be 100");
         assert_eq!(helper.get_data_memory(501), 200, "Second dirty address should be 200");
 
+        Ok(())
+    }
+
+    // --- Dataflow compiler integration tests ---
+
+    #[test]
+    fn test_dataflow_add_constants() -> Result<(), Box<dyn std::error::Error>> {
+        // Use the dataflow graph to compile 42 + 10, store to mem[100].
+        // Then run through the hardware and verify.
+        let runtime = create_runtime()?;
+        let mut tta = runtime
+            .create_model_simple::<TtaTestbench>()
+            .map_err(|e| format!("Failed to create model: {:?}", e))?;
+        let mut helper = TtaTestHelper::new();
+
+        tta.rst_i = 1;
+        tta.clk_i = 0;
+        tta.instr_ready_i = 0;
+        tta.data_ready_i = 0;
+        tta.instr_data_read_i = 0;
+        tta.data_data_read_i = 0;
+
+        let mut g = Graph::new();
+        let a = g.constant(42);
+        let b = g.constant(10);
+        let sum = g.add(a, b);
+        g.store_mem(100, sum);
+
+        let program = g.compile();
+        let mut machine_code = Vec::new();
+        for i in &program {
+            machine_code.extend(i.assemble());
+        }
+        helper.load_instructions(&machine_code, 0);
+        helper.run_until_reset_released(&mut tta)?;
+        helper.run_for_cycles(&mut tta, 200);
+
+        assert_eq!(helper.get_data_memory(100), 52, "42 + 10 = 52");
+        Ok(())
+    }
+
+    #[test]
+    fn test_dataflow_chained_computation() -> Result<(), Box<dyn std::error::Error>> {
+        // (10 + 20) * 5 = 150
+        let runtime = create_runtime()?;
+        let mut tta = runtime
+            .create_model_simple::<TtaTestbench>()
+            .map_err(|e| format!("Failed to create model: {:?}", e))?;
+        let mut helper = TtaTestHelper::new();
+
+        tta.rst_i = 1;
+        tta.clk_i = 0;
+        tta.instr_ready_i = 0;
+        tta.data_ready_i = 0;
+        tta.instr_data_read_i = 0;
+        tta.data_data_read_i = 0;
+
+        let mut g = Graph::new();
+        let a = g.constant(10);
+        let b = g.constant(20);
+        let sum = g.add(a, b);
+        let c = g.constant(5);
+        let prod = g.mul(sum, c);
+        g.store_mem(100, prod);
+
+        let program = g.compile();
+        let mut machine_code = Vec::new();
+        for i in &program {
+            machine_code.extend(i.assemble());
+        }
+        helper.load_instructions(&machine_code, 0);
+        helper.run_until_reset_released(&mut tta)?;
+        helper.run_for_cycles(&mut tta, 300);
+
+        assert_eq!(helper.get_data_memory(100), 150, "(10+20)*5 = 150");
+        Ok(())
+    }
+
+    #[test]
+    fn test_dataflow_compare_and_branch() -> Result<(), Box<dyn std::error::Error>> {
+        // if 42 > 10: store 0x999 to mem[100], skip the 0xBAD store
+        let runtime = create_runtime()?;
+        let mut tta = runtime
+            .create_model_simple::<TtaTestbench>()
+            .map_err(|e| format!("Failed to create model: {:?}", e))?;
+        let mut helper = TtaTestHelper::new();
+
+        tta.rst_i = 1;
+        tta.clk_i = 0;
+        tta.instr_ready_i = 0;
+        tta.data_ready_i = 0;
+        tta.instr_data_read_i = 0;
+        tta.data_data_read_i = 0;
+
+        // Build with dataflow graph + labels — no manual word counting.
+        let mut g = Graph::new();
+        let skip = g.label();
+
+        let a = g.constant(42);
+        let b = g.constant(10);
+        let cmp = g.gt(a, b);
+        g.set_cond(cmp);
+        g.branch_cond_label(skip);
+
+        // Else path (skipped when 42 > 10):
+        let bad = g.constant(0xBAD);
+        g.store_mem(400, bad); // distinct sink address
+
+        // Then path:
+        g.place_label(skip);
+        let good = g.constant(0x999);
+        g.store_mem(100, good);
+
+        let program = g.compile();
+        let mut machine_code = Vec::new();
+        for i in &program {
+            machine_code.extend(i.assemble());
+        }
+        helper.load_instructions(&machine_code, 0);
+        helper.run_until_reset_released(&mut tta)?;
+        helper.run_for_cycles(&mut tta, 300);
+
+        assert_eq!(helper.get_data_memory(100), 0x999,
+            "42 > 10 is true, should branch to then-path");
+        assert_eq!(helper.get_data_memory(400), 0,
+            "Else path should be skipped");
         Ok(())
     }
 }

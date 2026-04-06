@@ -8,7 +8,7 @@ Architecture](https://en.wikipedia.org/wiki/Transport_triggered_architecture).
 
 I built it just to play with the concept, learn some HDL stuff, and to
 potentially use it as the basis for domain specific coprocessors for
-other hobby projects of mine.  In particular I'd like to use it for
+other hobby projects of mine. In particular I'd like to use it for
 support for language interpreters for other hobby FPGA projects.
 
 ### What can it do?
@@ -49,23 +49,23 @@ destination require an extended operand.
 
 ### Transport units
 
-| Unit | As source | As destination |
-|------|-----------|----------------|
-| `REGISTER` | Read register N (mode-aware, see below) | Write register N (mode-aware) |
-| `ALU_LEFT` | Read ALU lane N left input (imm[2:0]) | Set ALU lane N left input |
-| `ALU_RIGHT` | Read ALU lane N right input | Set ALU lane N right input |
-| `ALU_OPERATOR` | -- | Set ALU lane N operation |
-| `ALU_RESULT` | Read ALU lane N result | -- |
-| `MEMORY_IMMEDIATE` | Load from 12-bit address | Store to 12-bit address |
-| `MEMORY_OPERAND` | Load from 32-bit address (next word) | Store to 32-bit address |
-| `WRITE_BARRIER` | Pop barrier FIFO (GC drain) | Push to barrier FIFO (log address) |
-| `ABS_IMMEDIATE` | Literal 12-bit value | -- |
-| `ABS_OPERAND` | Literal 32-bit value (next word) | -- |
-| `PC` | Read program counter | Jump (set program counter) |
-| `COND` | Read condition register (0 or 1) | Set condition (nonzero = true) |
-| `PC_COND` | -- | Jump only if condition register is set |
-| `STACK_PUSH_POP` | Pop from stack N (mode-aware) | Push to stack N |
-| `STACK_INDEX` | Peek at offset in stack N (mode-aware) | Poke at offset in stack N |
+| Unit               | As source                               | As destination                         |
+|--------------------|-----------------------------------------|----------------------------------------|
+| `REGISTER`         | Read register N (mode-aware, see below) | Write register N (mode-aware)          |
+| `ALU_LEFT`         | Read ALU lane N left input (imm[2:0])   | Set ALU lane N left input              |
+| `ALU_RIGHT`        | Read ALU lane N right input             | Set ALU lane N right input             |
+| `ALU_OPERATOR`     | --                                      | Set ALU lane N operation               |
+| `ALU_RESULT`       | Read ALU lane N result                  | --                                     |
+| `MEMORY_IMMEDIATE` | Load from 12-bit address                | Store to 12-bit address                |
+| `MEMORY_OPERAND`   | Load from 32-bit address (next word)    | Store to 32-bit address                |
+| `WRITE_BARRIER`    | Pop barrier FIFO (GC drain)             | Push to barrier FIFO (log address)     |
+| `ABS_IMMEDIATE`    | Literal 12-bit value                    | --                                     |
+| `ABS_OPERAND`      | Literal 32-bit value (next word)        | --                                     |
+| `PC`               | Read program counter                    | Jump (set program counter)             |
+| `COND`             | Read condition register (0 or 1)        | Set condition (nonzero = true)         |
+| `PC_COND`          | --                                      | Jump only if condition register is set |
+| `STACK_PUSH_POP`   | Pop from stack N (mode-aware)           | Push to stack N                        |
+| `STACK_INDEX`      | Peek at offset in stack N (mode-aware)  | Poke at offset in stack N              |
 
 All 16 unit codes are assigned. The assembler in `src/assembler.rs`
 is the authoritative reference for encoding details.
@@ -89,10 +89,10 @@ Comparisons (`EQL`, `GT`, `LT`) produce 0 or 1.
 The processor has a 1-bit condition register and two branch
 mechanisms:
 
-  * **Unconditional jump:** move a target address to `PC`.
-  * **Conditional branch:** set the condition register via
-    `COND`, then move a target address to `PC_COND`. The jump
-    is only taken if the condition register is nonzero.
+* **Unconditional jump:** move a target address to `PC`.
+* **Conditional branch:** set the condition register via
+  `COND`, then move a target address to `PC_COND`. The jump
+  is only taken if the condition register is nonzero.
 
 A compare-and-branch sequence looks like:
 
@@ -123,12 +123,12 @@ field encodes an access mode in bits [6:5]:
  3 b   2 b     5 b
 ```
 
-| Mode | Bits [6:5] | Read | Write |
-|------|-----------|------|-------|
-| RAW | 00 | Full 32-bit word | Full 32-bit word |
-| VALUE | 01 | Word with tag bits zeroed | Preserve tag, set payload |
-| TAG | 10 | Tag bits only (zero-extended) | Preserve payload, set tag |
-| DEREF | 11 | Strip tag, load mem[addr + offset] | Strip tag, store to mem[addr + offset] |
+| Mode  | Bits [6:5] | Read                               | Write                                  |
+|-------|------------|------------------------------------|----------------------------------------|
+| RAW   | 00         | Full 32-bit word                   | Full 32-bit word                       |
+| VALUE | 01         | Word with tag bits zeroed          | Preserve tag, set payload              |
+| TAG   | 10         | Tag bits only (zero-extended)      | Preserve payload, set tag              |
+| DEREF | 11         | Strip tag, load mem[addr + offset] | Strip tag, store to mem[addr + offset] |
 
 DEREF mode uses bits [9:7] as a word offset (0-7) from the
 untagged address. This enables single-move cons cell access:
@@ -191,9 +191,9 @@ and byte offset:
   2 b    2 b      8 b
 ```
 
-  * `width`: 00 = word (32-bit), 01 = byte, 10 = halfword
-  * `offs`: byte offset within the 32-bit word (0-3 for byte,
-    0 or 2 for halfword)
+* `width`: 00 = word (32-bit), 01 = byte, 10 = halfword
+* `offs`: byte offset within the 32-bit word (0-3 for byte,
+  0 or 2 for halfword)
 
 On writes, only the selected byte lane(s) are strobed. On reads,
 the selected bytes are zero-extended to 32 bits. This adds no
@@ -229,9 +229,10 @@ through separate wait states.
 
 **Valid/accept handshake.** The sequencer and execute communicate
 via a level-based valid/accept protocol:
-  * `instr_valid` — high when the queue has a complete instruction
-  * `instr_accept` — combinational from execute, fires for one
-    cycle when execute is idle
+
+* `instr_valid` — high when the queue has a complete instruction
+* `instr_accept` — combinational from execute, fires for one
+  cycle when execute is idle
 
 On accept, the sequencer dequeues the head entry and promotes it
 to the decoder-facing outputs. Execute latches `exec_active` and
@@ -249,29 +250,29 @@ just Verilator simulation.
 
 ### What can't it do yet?
 
-  * I'd like to add support for interrupts.
-  * Who knows? I aim for exotic fun.
+* I'd like to add support for interrupts.
+* Who knows? I aim for exotic fun.
 
 ### Cycle counts
 
 Measured from the Verilator simulation with the instruction queue
 warm (fetch latency hidden).
 
-| Instruction pattern | Cycles | Notes |
-|---------------------|--------|-------|
-| imm → reg | 2 | Fused src+dst |
-| reg → reg | 2 | Fused src+dst |
-| imm → ALU input/op | 2 | Fused src+dst |
-| ALU result → reg | 2 | Combinational ALU, fused |
-| reg → mem (write) | 3 | Fire-and-forget bus write |
-| mem → reg (read) | 4 | Bus read wait state |
-| abs_operand → reg | 2 | 2-word instruction, fused |
-| imm → cond | 2 | Fused |
-| pc_cond (not taken) | 2 | 2-word, fused |
-| reg[TAG] → reg | 4 | Tag extract |
-| reg[DEREF] → reg | 2 | Bus read through tagged pointer |
-| push (via operand) | 5 | 2-word + stack handshake |
-| pop → reg | 5 | Stack handshake + arming cycle |
+| Instruction pattern | Cycles | Notes                           |
+|---------------------|--------|---------------------------------|
+| imm → reg           | 2      | Fused src+dst                   |
+| reg → reg           | 2      | Fused src+dst                   |
+| imm → ALU input/op  | 2      | Fused src+dst                   |
+| ALU result → reg    | 2      | Combinational ALU, fused        |
+| reg → mem (write)   | 3      | Fire-and-forget bus write       |
+| mem → reg (read)    | 4      | Bus read wait state             |
+| abs_operand → reg   | 2      | 2-word instruction, fused       |
+| imm → cond          | 2      | Fused                           |
+| pc_cond (not taken) | 2      | 2-word, fused                   |
+| reg[TAG] → reg      | 4      | Tag extract                     |
+| reg[DEREF] → reg    | 2      | Bus read through tagged pointer |
+| push (via operand)  | 5      | 2-word + stack handshake        |
+| pop → reg           | 5      | Stack handshake + arming cycle  |
 
 The common case — register/immediate/ALU moves — is 2 cycles.
 Memory and stack operations pay extra for bus or stack handshakes.
@@ -282,15 +283,15 @@ for sequential code; branches stall the fetch until resolved.
 
 The project uses Rust with the Marlin library for simulation:
 
-  * `cargo test` runs the full test suite (100+ tests: integration,
-    property-based, and unit tests)
-  * `cargo run -- --cycles 200` runs the Marlin-backed `simtop`
-    wrapper with boot ROM and external SRAM modeling
-  * `cargo run -- --trace-file simtop.vcd` writes a VCD trace for
-    debugging
-  * A simple fusesoc core file is present for FPGA synthesis
-  
+* `cargo test` runs the full test suite (100+ tests: integration,
+  property-based, and unit tests)
+* `cargo run -- --cycles 200` runs the Marlin-backed `simtop`
+  wrapper with boot ROM and external SRAM modeling
+* `cargo run -- --trace-file simtop.vcd` writes a VCD trace for
+  debugging
+* A simple fusesoc core file is present for FPGA synthesis
+
 ### But this sucks, because <XXXX>?
 
-  * Well I'm not as smart as you! This is a toy.
-  * But ... Contributions welcome.
+* Well I'm not as smart as you! This is a toy.
+* But ... Contributions welcome.

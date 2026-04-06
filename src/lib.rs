@@ -1,4 +1,5 @@
 pub mod assembler;
+pub mod dataflow;
 pub mod simulator;
 
 pub use assembler::{instr, AccessWidth, ALUOp, Instr, RegMode, Unit};
