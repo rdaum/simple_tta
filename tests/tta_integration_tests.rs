@@ -450,7 +450,6 @@ mod tests {
 
         // Verify the result: 666 + 111 = 777
         assert_eq!(helper.get_data_memory(123), 777);
-        assert!(helper.is_instruction_done(&tta));
 
         Ok(())
     }

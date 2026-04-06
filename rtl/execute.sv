@@ -102,6 +102,11 @@ module execute (
   ExecState exec_state;
   logic [31:0] src_value;
 
+  // Execute runs autonomously once triggered by sel_i. This latch allows
+  // the sequencer to pulse sel_i for one cycle and move on to prefetch
+  // while execute continues processing multi-cycle operations.
+  logic exec_active;
+
   // 1-bit condition register for conditional branches.
   // Written via UNIT_COND (nonzero → 1, zero → 0).
   // Read via UNIT_COND (returns 0 or 1).
@@ -183,9 +188,24 @@ module execute (
       exec_state = EXEC_START_SRC;
       cond_reg = 1'b0;
       pc_write_en_o = 1'b0;
+      exec_active = 1'b0;
 
       done_o = 1'b0;
-    end else if (sel_i) begin
+    end else begin
+      // Auto-clear done_o and pc_write_en_o after one cycle. This
+      // makes done_o a pulse rather than a held level, enabling the
+      // sequencer to detect completion and move on.
+      if (done_o) begin
+        done_o = 1'b0;
+        pc_write_en_o = 1'b0;
+        exec_active = 1'b0;
+      end
+
+      // Start on sel_i pulse; stay active through multi-cycle operations.
+      if (sel_i && !exec_active)
+        exec_active = 1'b1;
+
+      if (exec_active) begin
       case (exec_state)
         EXEC_START_SRC: begin
           // src_resolved: set by immediate sources so the destination can
@@ -549,6 +569,7 @@ module execute (
           end
         end
       endcase
-    end
+    end // if (exec_active)
+    end // else (not reset)
   end
 endmodule : execute
