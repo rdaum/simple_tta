@@ -24,10 +24,11 @@ representations.
 ### What can it do?
 
 **Hardware resources:** 32 tagged registers, 8 independent
-integer ALU lanes, 8 hardware stacks (64 words each), a 32-entry
+integer ALU lanes, 8 hardware stacks (32 words each), a 32-entry
 GC write barrier FIFO, separate instruction and data buses, a
 2-entry instruction queue with prefetch, and a condition register
-for branching. All memory is word-addressed.
+for branching. All configurable via Verilog parameters. All
+memory is word-addressed.
 
 **Programming model:** there is really only one kind of
 instruction: *move a value from a source unit to a destination
@@ -42,6 +43,10 @@ strips the tag, adds an offset, and loads from memory — enabling
 `(car x)` in one instruction. Type dispatch is two instructions
 (peek tag → branch).
 
+**Predication:** any instruction can be conditionally executed
+based on the condition register, without a branch. This avoids
+pipeline stalls for simple conditional moves and type dispatch.
+
 **Synthesizable:** the design passes Yosys synthesis and
 Verilator lint with zero warnings. All sequential logic uses
 non-blocking assignments. CI runs tests, lint, and synthesis on
@@ -52,19 +57,20 @@ every push.
 Every instruction starts with a 32-bit opcode word:
 
 ```
- 31       20 19   16 15        4 3     0
-+-----------+-------+-----------+-------+
-| dst_imm   |dst_unt| src_imm   |src_unt|
-+-----------+-------+-----------+-------+
-     12 b      4 b      12 b      4 b
+ 31  28 27 26 25    18 17    10 9    5 4     0
++------+-----+-------+-------+------+-------+
+| rsvd |pred |  di   |  si   | dst  |  src  |
++------+-----+-------+-------+------+-------+
+  4 b   2 b    8 b     8 b    5 b     5 b
 ```
 
-The 4-bit source and destination unit fields select *what* to read
-from and write to. The 12-bit immediate fields carry
-unit-specific parameters (register index, ALU lane, stack ID, a
-small address, etc.).
+The 5-bit source and destination unit fields select *what* to
+read from and write to (32 slots, 24 currently used). The 8-bit
+immediate fields carry unit-specific parameters (register index,
+ALU lane, stack ID, small address/literal, etc.). The 2-bit
+predicate field enables conditional execution without branching.
 
-When a unit needs a full 32-bit value that won't fit in 12 bits
+When a unit needs a full 32-bit value that won't fit in 8 bits
 (memory operand addresses, large literals), an extra word follows
 the opcode in the instruction stream. Instructions are therefore
 1, 2, or 3 words long depending on whether the source and/or
@@ -72,27 +78,33 @@ destination require an extended operand.
 
 ### Transport units
 
-| Unit               | As source                               | As destination                         |
-|--------------------|-----------------------------------------|----------------------------------------|
-| `REGISTER`         | Read register N (mode-aware, see below) | Write register N (mode-aware)          |
-| `ALU_LEFT`         | Read ALU lane N left input (imm[2:0])   | Set ALU lane N left input              |
-| `ALU_RIGHT`        | Read ALU lane N right input             | Set ALU lane N right input             |
-| `ALU_OPERATOR`     | --                                      | Set ALU lane N operation               |
-| `ALU_RESULT`       | Read ALU lane N result                  | --                                     |
-| `MEMORY_IMMEDIATE` | Load from 12-bit address                | Store to 12-bit address                |
-| `MEMORY_OPERAND`   | Load from 32-bit address (next word)    | Store to 32-bit address                |
-| `WRITE_BARRIER`    | Pop barrier FIFO (GC drain)             | Push to barrier FIFO (log address)     |
-| `ABS_IMMEDIATE`    | Literal 12-bit value                    | --                                     |
-| `ABS_OPERAND`      | Literal 32-bit value (next word)        | --                                     |
-| `PC`               | Read program counter                    | Jump (set program counter)             |
-| `COND`             | Read condition register (0 or 1)        | Set condition (nonzero = true)         |
-| `PC_COND`          | --                                      | Jump only if condition register is set |
-| `STACK_PUSH_POP`   | Pop from stack N (mode-aware)           | Push to stack N                        |
-| `STACK_INDEX`      | Peek at offset in stack N (mode-aware)  | Poke at offset in stack N              |
-
-All 16 unit codes are assigned. The assembler in
-`crates/sideeffect-asm/src/assembler.rs` is the authoritative reference
-for encoding details.
+| # | Unit | As source | As destination |
+|---|------|-----------|----------------|
+| 0 | `NONE` | Yields 0 | Discards |
+| 1 | `STACK` | Pop from stack N | Push to stack N |
+| 2 | `STACK_INDEX` | Peek at offset in stack N | Poke at offset in stack N |
+| 3 | `REG` | Read register N (raw) | Write register N (raw) |
+| 4 | `REG_VALUE` | Read with tag bits zeroed | Write preserving tag |
+| 5 | `REG_TAG` | Read tag bits only | Write preserving payload |
+| 6 | `REG_DEREF` | Strip tag, load mem[addr+offset] | Strip tag, store to mem[addr+offset] |
+| 7 | `ALU_LEFT` | Read ALU lane N left input | Set ALU lane N left input |
+| 8 | `ALU_RIGHT` | Read ALU lane N right input | Set ALU lane N right input |
+| 9 | `ALU_OP` | -- | Set ALU lane N operation |
+| 10 | `ALU_RESULT` | Read ALU lane N result | -- |
+| 11 | `MEM_IMM` | Load from 8-bit address | Store to 8-bit address |
+| 12 | `MEM_OP` | Load from 32-bit address (next word) | Store to 32-bit address |
+| 13 | `IMM` | Literal 8-bit value (0-255) | -- |
+| 14 | `OPERAND` | Literal 32-bit value (next word) | -- |
+| 15 | `PC` | Read program counter | Jump (set PC) |
+| 16 | `PC_COND` | -- | Jump only if condition is set |
+| 17 | `COND` | Read condition (0 or 1) | Set condition (nonzero = true) |
+| 18 | `BARRIER` | Pop barrier FIFO (GC drain) | Push to barrier FIFO |
+| 19 | `MEM_BYTE` | Byte load (32-bit addr, imm=offset) | Byte store (32-bit addr, imm=offset) |
+| 20 | `STACK_POP_VALUE` | Pop with tag bits zeroed | -- |
+| 21 | `STACK_POP_TAG` | Pop with tag bits only | -- |
+| 22 | `STACK_PEEK_VALUE` | Peek with tag bits zeroed | -- |
+| 23 | `STACK_PEEK_TAG` | Peek with tag bits only | -- |
+| 24-31 | *free* | 8 slots for future units | |
 
 ### ALU operations
 
@@ -114,17 +126,21 @@ lanes small. A single muldiv unit is shared across all 8 lanes —
 the result is computed when the lane's result port is read. The ISA
 encoding is unchanged; the only difference is timing.
 
-### Branching
+### Branching and predication
 
-The processor has a 1-bit condition register and two branch
-mechanisms:
+The processor has a 1-bit condition register and three mechanisms
+for conditional execution:
 
 * **Unconditional jump:** move a target address to `PC`.
 * **Conditional branch:** set the condition register via
   `COND`, then move a target address to `PC_COND`. The jump
   is only taken if the condition register is nonzero.
+* **Predication:** any instruction can carry a predicate flag
+  (`if_set` or `if_clear`). When the condition doesn't match,
+  the instruction completes in one cycle with no side effects
+  and no pipeline stall.
 
-A compare-and-branch sequence looks like:
+A compare-and-branch sequence:
 
 ```
 42  → alu[0].left       ; set up comparison
@@ -134,33 +150,28 @@ alu[0].result → cond    ; latch result into condition register
 LABEL → pc_cond         ; jump if condition is set
 ```
 
-The condition register is resolved in a prior instruction, so the
-pipeline can forward the single-bit result with minimal stall.
+Predication eliminates branches for simple conditional moves:
+
+```
+alu[0].result → cond
+value → reg[0]  [if_set]    ; only executes if cond is set, no stall
+```
 
 ### Tagged registers
 
 Registers natively support tagged values, where a small type tag
 lives in the low bits of every 32-bit word (2-bit tags by default,
-configurable via `TAG_WIDTH`). The `REGISTER` unit's immediate
-field encodes an access mode in bits [6:5]:
+configurable via `TAG_WIDTH`). Four dedicated unit types handle
+the access modes:
 
-```
- 9   7  6  5  4       0
-+-----+-----+---------+
-|deref| mode| reg idx |
-|offs |     |         |
-+-----+-----+---------+
- 3 b   2 b     5 b
-```
+| Unit | Read | Write |
+|------|------|-------|
+| `REG` (3) | Full 32-bit word | Full 32-bit word |
+| `REG_VALUE` (4) | Word with tag bits zeroed | Preserve tag, set payload |
+| `REG_TAG` (5) | Tag bits only (zero-extended) | Preserve payload, set tag |
+| `REG_DEREF` (6) | Strip tag, load mem[addr + offset] | Strip tag, store to mem[addr + offset] |
 
-| Mode  | Bits [6:5] | Read                               | Write                                  |
-|-------|------------|------------------------------------|----------------------------------------|
-| RAW   | 00         | Full 32-bit word                   | Full 32-bit word                       |
-| VALUE | 01         | Word with tag bits zeroed          | Preserve tag, set payload              |
-| TAG   | 10         | Tag bits only (zero-extended)      | Preserve payload, set tag              |
-| DEREF | 11         | Strip tag, load mem[addr + offset] | Strip tag, store to mem[addr + offset] |
-
-DEREF mode uses bits [9:7] as a word offset (0-7) from the
+`REG_DEREF` uses imm[7:5] as a word offset (0-7) from the
 untagged address. This enables single-move cons cell access:
 
 ```
@@ -176,62 +187,50 @@ reg[r0, TAG] → cond          ; extract tag, set condition
 HANDLER → pc_cond            ; branch if tag is nonzero
 ```
 
-**Stacks** support the same RAW/VALUE/TAG modes on pop and peek
-(not DEREF). Mode bits are in imm[4:3] for push/pop and
-imm[10:9] for indexed access. This enables type dispatch directly
-from the stack without an intermediate register:
+**Stacks** support VALUE and TAG modes via dedicated unit types
+(`STACK_POP_VALUE`, `STACK_POP_TAG`, `STACK_PEEK_VALUE`,
+`STACK_PEEK_TAG`), enabling type dispatch directly from the
+stack without an intermediate register:
 
 ```
-peek[stack0, offset0, TAG] → cond   ; check type of TOS
-HANDLER → pc_cond                    ; branch on type
+peek_tag[stack0, offset0] → cond   ; check type of TOS
+HANDLER → pc_cond                  ; branch on type
 ```
 
 ### Write barrier (hardware GC support)
 
-The `WRITE_BARRIER` unit is a 32-entry hardware FIFO for
-garbage collection support. The mutator logs addresses of
-pointer stores; the GC drains the FIFO to find dirty regions.
+The `BARRIER` unit is a 32-entry hardware FIFO for garbage
+collection support. The mutator logs addresses of pointer
+stores; the GC drains the FIFO to find dirty regions.
 
 ```
 src_value → mem[addr]          ; store a pointer (normal)
-addr      → write_barrier      ; log the address for GC
+addr      → barrier            ; log the address for GC
 ```
 
 The GC drains the barrier by popping:
 
 ```
-write_barrier → reg[0]         ; next dirty address
+barrier → reg[0]               ; next dirty address
 ```
 
 Combined with tagged registers (TAG mode for type checking,
 DEREF for pointer chasing), this provides the core primitives
 for hardware-assisted GC in e.g. a Lisp or Lua runtime.
 
-### Sub-word memory access
+### Byte memory access
 
-`MEMORY_OPERAND` supports byte and halfword
-loads/stores. The 12-bit immediate field encodes the access width
-and byte offset:
+The `MEM_BYTE` unit provides single-byte loads and stores using
+a 32-bit operand address and an imm[1:0] byte offset (0-3).
+Reads zero-extend the selected byte to 32 bits; writes strobe
+only the selected byte lane.
 
 ```
- 11  10  9   8  7          0
-+------+------+------------+
-|width | offs | addr / reg |
-+------+------+------------+
-  2 b    2 b      8 b
+; Write 0x42 to byte 2 of word at address 100
+0x42 → mem_byte[addr=100, offset=2]
+; Read byte 2 back
+mem_byte[addr=100, offset=2] → reg[0]   ; r0 = 0x00000042
 ```
-
-* `width`: 00 = word (32-bit), 01 = byte, 10 = halfword
-* `offs`: byte offset within the 32-bit word (0-3 for byte,
-  0 or 2 for halfword)
-
-On writes, only the selected byte lane(s) are strobed. On reads,
-the selected bytes are zero-extended to 32 bits. This adds no
-extra clock cycles — the lane selection is pure combinational
-logic in the existing data path.
-
-`MEMORY_IMMEDIATE` always performs full-word access (the full
-12-bit immediate is used as a word address).
 
 ### Dataflow compiler
 
@@ -319,28 +318,32 @@ just Verilator simulation.
   activation blocked on one edge case)
 * Lua bytecode interpreter or JIT as a proof-of-concept runtime
 * Wider instruction bus / instruction cache for real FPGA memory
+* Jump table unit for computed gotos (type dispatch, eval)
 
 ### Cycle counts
 
 Measured from the Verilator simulation with the instruction queue
 warm (fetch latency hidden).
 
-| Instruction pattern | Cycles | Notes                           |
-|---------------------|--------|---------------------------------|
-| imm → reg           | 2      | Fused src+dst                   |
-| reg → reg           | 2      | Fused src+dst                   |
-| imm → ALU input/op  | 2      | Fused src+dst                   |
-| ALU result → reg    | 2      | Combinational ALU, fused        |
-| MUL/DIV/MOD result  | ~34    | 32-cycle multi-cycle unit       |
-| reg → mem (write)   | 3      | Fire-and-forget bus write       |
-| mem → reg (read)    | 4      | Bus read wait state             |
-| abs_operand → reg   | 2      | 2-word instruction, fused       |
-| imm → cond          | 2      | Fused                           |
-| pc_cond (not taken) | 2      | 2-word, fused                   |
-| reg[TAG] → reg      | 4      | Tag extract                     |
-| reg[DEREF] → reg    | 2      | Bus read through tagged pointer |
-| push (via operand)  | 5      | 2-word + stack handshake        |
-| pop → reg           | 5      | Stack handshake + arming cycle  |
+| Instruction pattern | Cycles | Notes |
+|---------------------|--------|-------|
+| imm → reg | 2 | Fused src+dst |
+| reg → reg | 2 | Fused src+dst |
+| imm → ALU input/op | 2 | Fused src+dst |
+| ALU result → reg | 2 | Combinational ALU, fused |
+| MUL/DIV/MOD result → reg | ~34 | 32-cycle multi-cycle unit |
+| reg → mem (write) | 3 | Fire-and-forget bus write |
+| mem → reg (read) | 4 | Bus read wait state |
+| operand → reg | 2 | 2-word instruction, fused |
+| imm → cond | 2 | Fused |
+| pc_cond (not taken) | 2 | 2-word, fused |
+| reg[TAG] → reg | 2 | Tag extract, fused |
+| reg[DEREF] → reg | 4 | Bus read through tagged pointer |
+| mem_byte → reg | 4 | Byte read + zero-extend |
+| push (via operand) | 5 | 2-word + stack handshake |
+| pop → reg | 5 | Stack handshake + arming cycle |
+| pop_tag → reg | 5 | Same as pop, tag mask applied |
+| predicated skip | 1 | Condition doesn't match, no-op |
 
 The common case — register/immediate/ALU moves — is 2 cycles.
 Memory and stack operations pay extra for bus or stack handshakes.
@@ -352,21 +355,23 @@ for sequential code; branches stall the fetch until resolved.
 Gate counts from Yosys synthesis (technology-mapped cells,
 excluding block RAM):
 
-| Module             | Cells  | Notes                              |
-|--------------------|-------:|------------------------------------|
-| execute            | 12,300 | Main FSM, muxing, bus control      |
-| alu_unit ×8        | 13,500 | 8 combinational ALU lanes          |
-| muldiv_unit        |  1,900 | Shared multi-cycle MUL/DIV/MOD     |
-| sequencer          |  2,900 | Instruction queue + fetch FSM      |
-| stack_unit         |  2,000 | 8×64-word stack controller         |
-| barrier_unit       |    330 | 32-entry GC write barrier FIFO     |
-| register_unit ×32  |  1,000 | 32 registers (flip-flops)          |
-| **Total**          | **~34k** |                                  |
+| Module | Cells | Notes |
+|--------|------:|-------|
+| execute | 11,900 | Main FSM, muxing, bus control |
+| alu_unit ×8 | 13,500 | 8 combinational ALU lanes |
+| sequencer | 2,900 | Instruction queue + fetch FSM |
+| muldiv_unit | 1,900 | Shared multi-cycle MUL/DIV/MOD |
+| stack_unit | 1,800 | 8×32-word stack controller |
+| register_unit ×32 | 1,100 | 32 registers (flip-flops) |
+| barrier_unit | 330 | 32-entry GC write barrier FIFO |
+| **Total** | **~33.5k** | |
 
 These counts are for the `tta` core only (excluding the FPGA
-wrapper and boot ROM). The design fits comfortably on a Xilinx
-7-series part like the CMod A35T (33,280 LUTs), with stack and
-register memories mapping to block RAM.
+wrapper and boot ROM). The design fits on a Xilinx 7-series
+part like the CMod A35T (33,280 LUTs), with stack and register
+memories mapping to block RAM. All dimensions (register count,
+ALU lanes, stack count/depth, barrier depth) are configurable
+via Verilog parameters.
 
 ### Project structure
 
@@ -383,7 +388,7 @@ HDL sources live in `rtl/`, with top-level simulation wrappers
 
 ### Building, running
 
-* `cargo test` runs the full test suite (113 tests: unit,
+* `cargo test` runs the full test suite (107 tests: unit,
   integration, and property-based)
 * `cargo run -p sideeffect-sim -- --cycles 200` runs the Marlin-backed
   `simtop` wrapper with boot ROM and external SRAM modeling
