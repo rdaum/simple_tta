@@ -19,10 +19,7 @@ module sequencer (
     output logic [31:0] src_operand_o,  // 32-bit source operand (when needed)
     output logic [31:0] dst_operand_o,  // 32-bit destination operand (when needed)
 
-    input  logic need_src_operand_i,    // From decoder: source needs an operand word
-    input  logic need_dst_operand_i,    // From decoder: destination needs an operand word
     input  logic sel_i,                 // Enable — held low to pause the sequencer
-    output wire  decoder_enable_o,      // One-cycle pulse that gates the decoder
 
     // PC override from execute (for jumps / conditional branches).
     // Sampled when done_o is about to go high on the next fetch cycle.
@@ -31,22 +28,28 @@ module sequencer (
 
     output logic done_o                 // High when the full instruction is fetched
 );
-  // Fetch FSM states. The sequencer walks through START → READ_OPCODE →
-  // DECODE, then optionally READ_SRC/DST_OPERAND before returning to START.
+  // Fetch FSM states. The decoder is now combinational, so the sequencer
+  // can check need_src/dst_operand in the same cycle it latches the opcode
+  // (no separate DECODE state needed).
   enum {
     SEQ_START,                  // Issue bus read for opcode at pc_o
-    SEQ_READ_OPCODE,            // Wait for bus ready, latch opcode
-    SEQ_DECODE,                 // Let decoder extract fields; decide on operands
-    SEQ_EXEC_SOURCE,            // (unused — reserved)
-    SEQ_EXEC_DEST,              // (unused — reserved)
-    SEQ_READ_SRC_OPERAND_START, // (unused — inlined into SEQ_DECODE)
+    SEQ_READ_OPCODE,            // Wait for bus ready, latch opcode + decide on operands
     SEQ_READ_SRC_OPERAND,       // Wait for source operand word from bus
     SEQ_READ_DST_OPERAND_START, // Issue bus read for destination operand word
     SEQ_READ_DST_OPERAND        // Wait for destination operand word from bus
   } sequencer_state;
 
-  // The decoder samples op_o only during the dedicated decode state.
-  assign decoder_enable_o = sequencer_state == SEQ_DECODE;
+  // Inline operand-needed checks so the sequencer can decide in the same
+  // cycle it latches the opcode, without waiting for the external decoder.
+  function automatic logic needs_src_op(logic [31:0] raw_op);
+    Unit su = Unit'(raw_op[3:0]);
+    return su == UNIT_MEMORY_OPERAND || su == UNIT_ABS_OPERAND;
+  endfunction
+
+  function automatic logic needs_dst_op(logic [31:0] raw_op);
+    Unit du = Unit'(raw_op[19:16]);
+    return du == UNIT_MEMORY_OPERAND || du == UNIT_ABS_OPERAND;
+  endfunction
 
   always @(posedge clk_i) begin
     if (rst_i) begin
@@ -71,23 +74,21 @@ module sequencer (
         SEQ_READ_OPCODE: begin
           if (instr_bus.ready) begin
             op_o = instr_bus.read_data;
-            sequencer_state = SEQ_DECODE;
-          end
-        end
-        SEQ_DECODE: begin
-          // Extension operands, when needed, live in subsequent program words
-          // at pc+1 (source) and pc+1 or pc+2 (destination).
-          if (need_src_operand_i || need_dst_operand_i) begin
-            instr_bus.valid = 1'b1;
-            instr_bus.instr = 1'b0;
-            instr_bus.addr  = pc_o + 1;
-            if (need_src_operand_i) sequencer_state = SEQ_READ_SRC_OPERAND;
-            else sequencer_state = SEQ_READ_DST_OPERAND;
-          end else begin
-            // No operand words — instruction is 1 word. Advance PC past it.
-            done_o = 1'b1;
-            pc_o = pc_o + 1;
-            sequencer_state = SEQ_START;
+            // Determine operand requirements directly from the raw bus data,
+            // since the combinational decoder may not have re-evaluated yet
+            // within this always block.
+            if (needs_src_op(instr_bus.read_data) || needs_dst_op(instr_bus.read_data)) begin
+              instr_bus.valid = 1'b1;
+              instr_bus.instr = 1'b0;
+              instr_bus.addr  = pc_o + 1;
+              if (needs_src_op(instr_bus.read_data)) sequencer_state = SEQ_READ_SRC_OPERAND;
+              else sequencer_state = SEQ_READ_DST_OPERAND;
+            end else begin
+              // No operand words — instruction is 1 word. Advance PC past it.
+              done_o = 1'b1;
+              pc_o = pc_o + 1;
+              sequencer_state = SEQ_START;
+            end
           end
         end
         SEQ_READ_SRC_OPERAND: begin
@@ -95,7 +96,7 @@ module sequencer (
             src_operand_o = instr_bus.read_data;
             // Advance past the source operand word.
             pc_o = pc_o + 1;
-            if (need_dst_operand_i) sequencer_state = SEQ_READ_DST_OPERAND_START;
+            if (needs_dst_op(op_o)) sequencer_state = SEQ_READ_DST_OPERAND_START;
             else begin
               // 2-word instruction (opcode + src operand). Advance past opcode.
               done_o = 1'b1;

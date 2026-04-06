@@ -192,6 +192,9 @@ module execute (
     end else if (sel_i) begin
       case (exec_state)
         EXEC_START_SRC: begin
+          // src_resolved: set by immediate sources so the destination can
+          // be evaluated in the same cycle (fused src+dst, no extra state).
+          automatic logic src_resolved = 1'b0;
           done_o = 1'b0;
           pc_write_en_o = 1'b0;
           reg_unit_select = '{default: 1'b0};
@@ -230,18 +233,17 @@ module execute (
                 REG_RAW: begin
                   reg_unit_select[src_reg_idx] = 1'b1;
                   src_value = reg_raw_data[src_reg_idx];
-                  exec_state = EXEC_START_DST;
+                  src_resolved = 1'b1;
                 end
                 REG_VALUE: begin
                   src_value = reg_raw_data[src_reg_idx] & ~TAG_MASK_32;
-                  exec_state = EXEC_START_DST;
+                  src_resolved = 1'b1;
                 end
                 REG_TAG: begin
                   src_value = reg_raw_data[src_reg_idx] & TAG_MASK_32;
-                  exec_state = EXEC_START_DST;
+                  src_resolved = 1'b1;
                 end
                 REG_DEREF: begin
-                  // Strip tag, add word offset, issue memory read.
                   data_bus.addr = (reg_raw_data[src_reg_idx] & ~TAG_MASK_32)
                                 + {29'b0, src_deref_offset};
                   data_bus.valid = 1'b1;
@@ -251,62 +253,139 @@ module execute (
             end
             UNIT_ALU_LEFT: begin
               src_value  = alu_in_data_a[src_immediate_i[2:0]];
-              exec_state = EXEC_START_DST;
+              src_resolved = 1'b1;
             end
             UNIT_ALU_RIGHT: begin
               src_value  = alu_in_data_b[src_immediate_i[2:0]];
-              exec_state = EXEC_START_DST;
+              src_resolved = 1'b1;
             end
             UNIT_ALU_RESULT: begin
-              // ALU outputs are registered, so fetch them in a separate state.
               alu_select[src_immediate_i[2:0]] = 1'b1;
               exec_state = EXEC_SRC_ALU_RETRIEVE;
             end
             UNIT_ABS_IMMEDIATE: begin
               src_value  = {20'b0, src_immediate_i};
-              exec_state = EXEC_START_DST;
+              src_resolved = 1'b1;
             end
             UNIT_ABS_OPERAND: begin
               src_value  = src_operand_i;
-              exec_state = EXEC_START_DST;
+              src_resolved = 1'b1;
             end
             UNIT_PC: begin
               src_value  = pc_i;
-              exec_state = EXEC_START_DST;
+              src_resolved = 1'b1;
             end
             UNIT_COND: begin
-              // Read the condition register (0 or 1).
               src_value  = {31'b0, cond_reg};
-              exec_state = EXEC_START_DST;
+              src_resolved = 1'b1;
             end
             UNIT_STACK_PUSH_POP: begin
-              // Pop returns the top-of-stack as the source value.
-              stack_select = src_immediate_i[2:0];  // Stack ID from bits 2:0
+              stack_select = src_immediate_i[2:0];
               stack_pop = 1'b1;
               exec_state = EXEC_SRC_STACK_WAIT;
             end
             UNIT_STACK_INDEX: begin
-              // Indexed stack reads implement peek-like behavior.
-              stack_select = src_immediate_i[2:0];     // Stack ID from bits 2:0
-              stack_offset = src_immediate_i[8:3];     // Offset from bits 8:3 (6 bits)
+              stack_select = src_immediate_i[2:0];
+              stack_offset = src_immediate_i[8:3];
               stack_index_read = 1'b1;
               exec_state = EXEC_SRC_STACK_WAIT;
             end
             UNIT_NONE: begin
               src_value = 32'b0;
-              if (dst_unit_i != UNIT_NONE) begin
-                exec_state = EXEC_START_DST;
-              end else begin
-                // True no-op (NONE → NONE): complete immediately.
+              if (dst_unit_i != UNIT_NONE)
+                src_resolved = 1'b1;
+              else begin
                 done_o = 1'b1;
                 exec_state = EXEC_START_SRC;
               end
             end
             default: begin
               src_value  = 32'b0;
-              exec_state = EXEC_START_DST;
+              src_resolved = 1'b1;
             end
           endcase
+
+          // When the source resolved immediately, evaluate the destination
+          // in the same cycle — fused execute, no extra state transition.
+          if (src_resolved) begin
+            // Inline the EXEC_START_DST logic. For destinations that need
+            // extra cycles (stack), fall back to the EXEC_START_DST state.
+            case (dst_unit_i) inside
+              UNIT_REGISTER: begin
+                case (dst_reg_mode)
+                  REG_RAW: begin
+                    reg_unit_select[dst_reg_idx] = 1'b1;
+                    reg_unit_write[dst_reg_idx] = 1'b1;
+                    reg_in_data[dst_reg_idx] = src_value;
+                  end
+                  REG_VALUE: begin
+                    reg_unit_select[dst_reg_idx] = 1'b1;
+                    reg_unit_write[dst_reg_idx] = 1'b1;
+                    reg_in_data[dst_reg_idx] = (src_value & ~TAG_MASK_32)
+                                             | (reg_raw_data[dst_reg_idx] & TAG_MASK_32);
+                  end
+                  REG_TAG: begin
+                    reg_unit_select[dst_reg_idx] = 1'b1;
+                    reg_unit_write[dst_reg_idx] = 1'b1;
+                    reg_in_data[dst_reg_idx] = (reg_raw_data[dst_reg_idx] & ~TAG_MASK_32)
+                                             | (src_value & TAG_MASK_32);
+                  end
+                  REG_DEREF: begin
+                    data_bus.addr = (reg_raw_data[dst_reg_idx] & ~TAG_MASK_32)
+                                  + {29'b0, dst_deref_offset};
+                    data_bus.write_data = src_value;
+                    data_bus.wstrb = 4'b1111;
+                    data_bus.valid = 1'b1;
+                  end
+                endcase
+                done_o = 1'b1;
+                exec_state = EXEC_START_SRC;
+              end
+              UNIT_ALU_LEFT: begin
+                alu_in_data_a[dst_immediate_i[2:0]] = src_value;
+                done_o = 1'b1;
+                exec_state = EXEC_START_SRC;
+              end
+              UNIT_ALU_RIGHT: begin
+                alu_in_data_b[dst_immediate_i[2:0]] = src_value;
+                done_o = 1'b1;
+                exec_state = EXEC_START_SRC;
+              end
+              UNIT_ALU_OPERATOR: begin
+                alu_operation[dst_immediate_i[2:0]] = ALU_OPERATOR'(src_value);
+                done_o = 1'b1;
+                exec_state = EXEC_START_SRC;
+              end
+              UNIT_PC: begin
+                pc_write_o = src_value;
+                pc_write_en_o = 1'b1;
+                done_o = 1'b1;
+                exec_state = EXEC_START_SRC;
+              end
+              UNIT_COND: begin
+                cond_reg = (src_value != 32'b0);
+                done_o = 1'b1;
+                exec_state = EXEC_START_SRC;
+              end
+              UNIT_PC_COND: begin
+                if (cond_reg) begin
+                  pc_write_o = src_value;
+                  pc_write_en_o = 1'b1;
+                end
+                done_o = 1'b1;
+                exec_state = EXEC_START_SRC;
+              end
+              UNIT_NONE: begin
+                done_o = 1'b1;
+                exec_state = EXEC_START_SRC;
+              end
+              default: begin
+                // Destinations needing extra cycles (memory, stack) go
+                // through the EXEC_START_DST state on the next cycle.
+                exec_state = EXEC_START_DST;
+              end
+            endcase
+          end
 
         end
         EXEC_SRC_MEM_RETRIEVE: begin

@@ -24,9 +24,6 @@ module tta (
 
   assign instr_done_o = done_exec;
 
-  logic need_src_operand;
-  logic need_dst_operand;
-  logic decoder_enable;
   logic sequencer_done;
 
   // PC write interface from execute (jumps / conditional branches).
@@ -43,10 +40,7 @@ module tta (
       .op_o(op),
       .sel_i(~pause_sequencer),
       .src_operand_o(src_operand),
-      .need_src_operand_i(need_src_operand),
       .dst_operand_o(dst_operand),
-      .decoder_enable_o(decoder_enable),
-      .need_dst_operand_i(need_dst_operand),
       .pc_write_i(pc_write),
       .pc_write_en_i(pc_write_en),
       .done_o(sequencer_done)
@@ -57,15 +51,10 @@ module tta (
   logic [11:0] di;
 
   decoder decoder (
-      .rst_i(rst_i),
-      .clk_i(clk_i),
-      .sel_i(decoder_enable),
       .op_i(op),
       .src_unit_o(src_unit),
-      .need_src_operand_o(need_src_operand),
       .si_o(si),
       .dst_unit_o(dst_unit),
-      .need_dst_operand_o(need_dst_operand),
       .di_o(di)
   );
 
