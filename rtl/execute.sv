@@ -294,8 +294,13 @@ module execute (
             end
             UNIT_NONE: begin
               src_value = 32'b0;
-              // Don't waste an extra clock cycle on no-op instructions.
-              if (dst_unit_i != UNIT_NONE) exec_state = EXEC_START_DST;
+              if (dst_unit_i != UNIT_NONE) begin
+                exec_state = EXEC_START_DST;
+              end else begin
+                // True no-op (NONE → NONE): complete immediately.
+                done_o = 1'b1;
+                exec_state = EXEC_START_SRC;
+              end
             end
             default: begin
               src_value  = 32'b0;

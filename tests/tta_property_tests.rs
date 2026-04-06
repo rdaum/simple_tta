@@ -2359,5 +2359,431 @@ mod property_tests {
             tagged_ptr, aligned_addr, tag, offset, aligned_addr + offset as u32);
     }
 
+    /// Property: Halfword read extracts the correct half and zero-extends
+    #[test]
+    fn prop_halfword_read_zero_extends(
+        word in data_value(),
+        high_half in prop::bool::ANY,
+    ) {
+        let runtime = create_runtime().unwrap();
+        let mut tta = runtime.create_model_simple::<TtaTestbench>().unwrap();
+        let mut helper = TtaPropertyHelper::new();
+
+        tta.rst_i = 1;
+        tta.clk_i = 0;
+        tta.instr_ready_i = 1;
+        tta.data_ready_i = 1;
+        tta.instr_data_read_i = 0;
+        tta.data_data_read_i = 0;
+
+        helper.set_data_memory(60, word);
+        let offset = if high_half { 2u8 } else { 0u8 };
+
+        let program = vec![
+            instr()
+                .src_mem_op(60, AccessWidth::HalfWord, offset)
+                .dst(Unit::UNIT_MEMORY_IMMEDIATE)
+                .di(100),
+        ];
+
+        let mut machine_code = Vec::new();
+        for instr in program {
+            machine_code.extend(instr.assemble());
+        }
+        helper.load_instructions(&machine_code, 0);
+        helper.run_until_reset_released(&mut tta).unwrap();
+        helper.run_for_cycles(&mut tta, 200);
+
+        let result = helper.get_data_memory(100);
+        let expected = if high_half {
+            (word >> 16) & 0xFFFF
+        } else {
+            word & 0xFFFF
+        };
+
+        prop_assert_eq!(result, expected,
+            "Halfword read (high={}) of {:#010x} should be {:#06x}, got {:#06x}",
+            high_half, word, expected, result);
+    }
+
+    /// Property: DEREF write stores to (reg & ~TAG_MASK) + offset
+    #[test]
+    fn prop_deref_writes_at_untagged_address(
+        base_addr in 4u32..200,
+        tag in 0u32..4,
+        offset in 0u8..4,
+        write_value in data_value(),
+    ) {
+        let aligned_addr = base_addr & !0x3;
+        if aligned_addr == 0 { return Ok(()); }
+
+        let runtime = create_runtime().unwrap();
+        let mut tta = runtime.create_model_simple::<TtaTestbench>().unwrap();
+        let mut helper = TtaPropertyHelper::new();
+
+        tta.rst_i = 1;
+        tta.clk_i = 0;
+        tta.instr_ready_i = 1;
+        tta.data_ready_i = 1;
+        tta.instr_data_read_i = 0;
+        tta.data_data_read_i = 0;
+
+        let tagged_ptr = aligned_addr | tag;
+
+        let program = vec![
+            // Load tagged pointer into r0
+            instr()
+                .src(Unit::UNIT_ABS_OPERAND)
+                .soperand(tagged_ptr)
+                .dst(Unit::UNIT_REGISTER)
+                .di(0),
+            // DEREF write: store write_value at (r0 & ~MASK) + offset
+            instr()
+                .src(Unit::UNIT_ABS_OPERAND)
+                .soperand(write_value)
+                .dst_deref(0, offset),
+        ];
+
+        let mut machine_code = Vec::new();
+        for instr in program {
+            machine_code.extend(instr.assemble());
+        }
+        helper.load_instructions(&machine_code, 0);
+        helper.run_until_reset_released(&mut tta).unwrap();
+        helper.run_for_cycles(&mut tta, 200);
+
+        let target_addr = aligned_addr + offset as u32;
+        let result = helper.get_data_memory(target_addr);
+        prop_assert_eq!(result, write_value,
+            "DEREF write via tagged_ptr={:#010x} + offset={} should store at addr {}",
+            tagged_ptr, offset, target_addr);
+    }
+
+    /// Property: COND register readback returns 0 or 1 matching what was set
+    #[test]
+    fn prop_cond_readback(
+        value in 0u32..256,
+    ) {
+        let runtime = create_runtime().unwrap();
+        let mut tta = runtime.create_model_simple::<TtaTestbench>().unwrap();
+        let mut helper = TtaPropertyHelper::new();
+
+        tta.rst_i = 1;
+        tta.clk_i = 0;
+        tta.instr_ready_i = 1;
+        tta.data_ready_i = 1;
+        tta.instr_data_read_i = 0;
+        tta.data_data_read_i = 0;
+
+        let program = vec![
+            // Set condition register
+            instr()
+                .src(Unit::UNIT_ABS_IMMEDIATE)
+                .si(value as u16)
+                .dst(Unit::UNIT_COND),
+            // Read condition register back to mem[100]
+            instr()
+                .src(Unit::UNIT_COND)
+                .dst(Unit::UNIT_MEMORY_IMMEDIATE)
+                .di(100),
+        ];
+
+        let mut machine_code = Vec::new();
+        for instr in program {
+            machine_code.extend(instr.assemble());
+        }
+        helper.load_instructions(&machine_code, 0);
+        helper.run_until_reset_released(&mut tta).unwrap();
+        helper.run_for_cycles(&mut tta, 200);
+
+        let result = helper.get_data_memory(100);
+        let expected = if value != 0 { 1u32 } else { 0u32 };
+        prop_assert_eq!(result, expected,
+            "COND readback after writing {} should be {}", value, expected);
+    }
+
+    /// Property: UNIT_PC as source returns the current program counter
+    #[test]
+    fn prop_pc_read(
+        _dummy in 0u32..1,  // just need one run
+    ) {
+        let runtime = create_runtime().unwrap();
+        let mut tta = runtime.create_model_simple::<TtaTestbench>().unwrap();
+        let mut helper = TtaPropertyHelper::new();
+
+        tta.rst_i = 1;
+        tta.clk_i = 0;
+        tta.instr_ready_i = 1;
+        tta.data_ready_i = 1;
+        tta.instr_data_read_i = 0;
+        tta.data_data_read_i = 0;
+
+        // addr 0: no-op (advance PC to 1)
+        // addr 1: read PC → mem[100]  (PC should be 2 since sequencer advances before execute)
+        // addr 2: read PC → mem[101]  (PC should be 3)
+        let program = vec![
+            instr()
+                .src(Unit::UNIT_ABS_IMMEDIATE)
+                .si(0)
+                .dst(Unit::UNIT_REGISTER)
+                .di(0),
+            instr()
+                .src(Unit::UNIT_PC)
+                .dst(Unit::UNIT_MEMORY_IMMEDIATE)
+                .di(100),
+            instr()
+                .src(Unit::UNIT_PC)
+                .dst(Unit::UNIT_MEMORY_IMMEDIATE)
+                .di(101),
+        ];
+
+        let mut machine_code = Vec::new();
+        for instr in program {
+            machine_code.extend(instr.assemble());
+        }
+        helper.load_instructions(&machine_code, 0);
+        helper.run_until_reset_released(&mut tta).unwrap();
+        helper.run_for_cycles(&mut tta, 200);
+
+        let pc_at_1 = helper.get_data_memory(100);
+        let pc_at_2 = helper.get_data_memory(101);
+
+        // PC should increment by 1 for each single-word instruction
+        prop_assert_eq!(pc_at_2, pc_at_1 + 1,
+            "PC should increment by 1 between consecutive instructions");
+    }
+
+    /// Property: UNIT_NONE as both src and dst is a no-op that completes
+    #[test]
+    fn prop_nop_completes(
+        _dummy in 0u32..1,
+    ) {
+        let runtime = create_runtime().unwrap();
+        let mut tta = runtime.create_model_simple::<TtaTestbench>().unwrap();
+        let mut helper = TtaPropertyHelper::new();
+
+        tta.rst_i = 1;
+        tta.clk_i = 0;
+        tta.instr_ready_i = 1;
+        tta.data_ready_i = 1;
+        tta.instr_data_read_i = 0;
+        tta.data_data_read_i = 0;
+
+        // Three no-ops followed by a store — verifies no-ops don't stall
+        let program = vec![
+            instr(),  // UNIT_NONE → UNIT_NONE
+            instr(),
+            instr(),
+            instr()
+                .src(Unit::UNIT_ABS_IMMEDIATE)
+                .si(42)
+                .dst(Unit::UNIT_MEMORY_IMMEDIATE)
+                .di(100),
+        ];
+
+        let mut machine_code = Vec::new();
+        for instr in program {
+            machine_code.extend(instr.assemble());
+        }
+        helper.load_instructions(&machine_code, 0);
+        helper.run_until_reset_released(&mut tta).unwrap();
+        helper.run_for_cycles(&mut tta, 200);
+
+        let result = helper.get_data_memory(100);
+        prop_assert_eq!(result, 42, "Instruction after no-ops should execute normally");
+    }
+
+    /// Property: Lisp-style pattern — DEREF car, check tag, conditional branch
+    #[test]
+    fn prop_lisp_car_tag_branch(
+        car_value in data_value(),
+        cdr_value in data_value(),
+    ) {
+        let runtime = create_runtime().unwrap();
+        let mut tta = runtime.create_model_simple::<TtaTestbench>().unwrap();
+        let mut helper = TtaPropertyHelper::new();
+
+        tta.rst_i = 1;
+        tta.clk_i = 0;
+        tta.instr_ready_i = 1;
+        tta.data_ready_i = 1;
+        tta.instr_data_read_i = 0;
+        tta.data_data_read_i = 0;
+
+        // Cons cell at word address 40: car=car_value, cdr=cdr_value
+        helper.set_data_memory(40, car_value);
+        helper.set_data_memory(41, cdr_value);
+
+        let cons_ptr = 40u32 | 1; // tag 1 = cons
+
+        // Program:
+        //   0-1: load cons_ptr into r0
+        //   2:   DEREF r0+0 (car) → r1
+        //   3:   DEREF r0+1 (cdr) → r2
+        //   4:   read TAG of r1 → COND (branch if car has nonzero tag)
+        //   5-6: conditional jump to addr 8
+        //   7:   store 0xAAAA to mem[200] (car tag is 0 path)
+        //   8:   store 0xBBBB to mem[201] (always reached)
+        //   9:   store r1 RAW to mem[202] (verify car value)
+        //   10:  store r2 RAW to mem[203] (verify cdr value)
+        let program = vec![
+            instr()
+                .src(Unit::UNIT_ABS_OPERAND)
+                .soperand(cons_ptr)
+                .dst(Unit::UNIT_REGISTER)
+                .di(0),
+            instr()
+                .src_deref(0, 0)
+                .dst(Unit::UNIT_REGISTER)
+                .di(1),
+            instr()
+                .src_deref(0, 1)
+                .dst(Unit::UNIT_REGISTER)
+                .di(2),
+            instr()
+                .src_reg(1, RegMode::Tag)
+                .dst(Unit::UNIT_COND),
+            instr()
+                .src(Unit::UNIT_ABS_OPERAND)
+                .soperand(8)
+                .dst(Unit::UNIT_PC_COND),
+            // addr 7: only reached if car tag == 0
+            instr()
+                .src(Unit::UNIT_ABS_OPERAND)
+                .soperand(0xAAAA)
+                .dst(Unit::UNIT_MEMORY_IMMEDIATE)
+                .di(200),
+            // addr 8: always reached
+            instr()
+                .src(Unit::UNIT_ABS_OPERAND)
+                .soperand(0xBBBB)
+                .dst(Unit::UNIT_MEMORY_IMMEDIATE)
+                .di(201),
+            // Store car and cdr for verification
+            instr()
+                .src_reg(1, RegMode::Raw)
+                .dst(Unit::UNIT_MEMORY_IMMEDIATE)
+                .di(202),
+            instr()
+                .src_reg(2, RegMode::Raw)
+                .dst(Unit::UNIT_MEMORY_IMMEDIATE)
+                .di(203),
+        ];
+
+        let mut machine_code = Vec::new();
+        for instr in program {
+            machine_code.extend(instr.assemble());
+        }
+        helper.load_instructions(&machine_code, 0);
+        helper.run_until_reset_released(&mut tta).unwrap();
+        helper.run_for_cycles(&mut tta, 300);
+
+        let mem200 = helper.get_data_memory(200);
+        let mem201 = helper.get_data_memory(201);
+        let stored_car = helper.get_data_memory(202);
+        let stored_cdr = helper.get_data_memory(203);
+
+        // Verify car/cdr were loaded correctly
+        prop_assert_eq!(stored_car, car_value,
+            "car should be loaded from mem[40]");
+        prop_assert_eq!(stored_cdr, cdr_value,
+            "cdr should be loaded from mem[41]");
+
+        // Verify branch behavior based on car's tag
+        let car_tag = car_value & 0x3;
+        prop_assert_eq!(mem201, 0xBBBB, "addr 8 should always execute");
+        if car_tag != 0 {
+            prop_assert_eq!(mem200, 0,
+                "car tag={}: branch taken, addr 7 should be skipped", car_tag);
+        } else {
+            prop_assert_eq!(mem200, 0xAAAA,
+                "car tag=0: branch not taken, addr 7 should execute");
+        }
+    }
+
+    /// Property: ALU comparison ops correctly feed COND → PC_COND
+    #[test]
+    fn prop_compare_and_branch_ops(
+        a in 0u32..1000,
+        b in 0u32..1000,
+        op_idx in 0u8..3,  // 0=EQL, 1=GT, 2=LT
+    ) {
+        let runtime = create_runtime().unwrap();
+        let mut tta = runtime.create_model_simple::<TtaTestbench>().unwrap();
+        let mut helper = TtaPropertyHelper::new();
+
+        tta.rst_i = 1;
+        tta.clk_i = 0;
+        tta.instr_ready_i = 1;
+        tta.data_ready_i = 1;
+        tta.instr_data_read_i = 0;
+        tta.data_data_read_i = 0;
+
+        let (alu_op, expected_result) = match op_idx {
+            0 => (ALUOp::ALU_EQL as u16, if a == b { 1u32 } else { 0 }),
+            1 => (ALUOp::ALU_GT as u16,  if a > b  { 1u32 } else { 0 }),
+            _ => (ALUOp::ALU_LT as u16,  if a < b  { 1u32 } else { 0 }),
+        };
+
+        // Use ABS_IMMEDIATE for small values to keep instructions single-word
+        // where possible, making address arithmetic simpler.
+        // addr 0: a → alu[0].left     (ABS_IMM, 1 word — only low 12 bits, a < 1000)
+        // addr 1: b → alu[0].right    (ABS_IMM, 1 word)
+        // addr 2: op → alu[0].operator(ABS_IMM, 1 word)
+        // addr 3: alu[0].result → cond(1 word)
+        // addr 4-5: conditional jump to addr 7 (ABS_OPERAND, 2 words)
+        // addr 6: store marker → mem[100] (ABS_IMM, 1 word)
+        // addr 7: store done → mem[101] (ABS_IMM, 1 word)
+        let program = vec![
+            instr()
+                .src(Unit::UNIT_ABS_IMMEDIATE).si(a as u16)
+                .dst(Unit::UNIT_ALU_LEFT).di(0),
+            instr()
+                .src(Unit::UNIT_ABS_IMMEDIATE).si(b as u16)
+                .dst(Unit::UNIT_ALU_RIGHT).di(0),
+            instr()
+                .src(Unit::UNIT_ABS_IMMEDIATE).si(alu_op)
+                .dst(Unit::UNIT_ALU_OPERATOR).di(0),
+            instr()
+                .src(Unit::UNIT_ALU_RESULT).si(0)
+                .dst(Unit::UNIT_COND),
+            instr()
+                .src(Unit::UNIT_ABS_OPERAND).soperand(7)
+                .dst(Unit::UNIT_PC_COND),
+            // addr 6: comparison was false — write a distinctive marker
+            instr()
+                .src(Unit::UNIT_ABS_IMMEDIATE).si(0xFAF)
+                .dst(Unit::UNIT_MEMORY_IMMEDIATE).di(100),
+            // addr 7: always reached
+            instr()
+                .src(Unit::UNIT_ABS_IMMEDIATE).si(0xD0E)
+                .dst(Unit::UNIT_MEMORY_IMMEDIATE).di(101),
+        ];
+
+        let mut machine_code = Vec::new();
+        for instr in program {
+            machine_code.extend(instr.assemble());
+        }
+        helper.load_instructions(&machine_code, 0);
+        helper.run_until_reset_released(&mut tta).unwrap();
+        helper.run_for_cycles(&mut tta, 200);
+
+        let mem100 = helper.get_data_memory(100);
+        let mem101 = helper.get_data_memory(101);
+
+        prop_assert_eq!(mem101, 0xD0E, "addr 7 should always execute");
+        if expected_result != 0 {
+            // Branch taken — addr 6 should be skipped (mem100 stays 0)
+            prop_assert_eq!(mem100, 0,
+                "Comparison true (a={}, b={}, op={}): branch taken, addr 6 skipped",
+                a, b, op_idx);
+        } else {
+            // Branch not taken — addr 6 should execute
+            prop_assert_eq!(mem100, 0xFAF,
+                "Comparison false (a={}, b={}, op={}): branch not taken, addr 6 should write marker",
+                a, b, op_idx);
+        }
+    }
+
     }
 }
