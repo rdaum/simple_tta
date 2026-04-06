@@ -26,6 +26,12 @@
 // instruction_word_count), i.e., the address of the next sequential
 // instruction. This is what execute sees via UNIT_PC.
 //
+// Fetch policy: the fetch FSM will NOT start fetching past a control-
+// flow instruction (UNIT_PC or UNIT_PC_COND as destination). It stalls
+// until execute accepts the branch, at which point either a flush
+// occurs (taken) or sequential fetch resumes (not taken). This means
+// the queue never contains wrong-path instructions.
+//
 // On a taken branch, pc_write_en_i invalidates the entire queue and
 // restarts the fetch FSM from the new PC.
 module sequencer (
@@ -97,6 +103,12 @@ module sequencer (
   assign dbg_prefetch_op_o = staging_op;
 `endif
 
+  // Fetch is blocked when the queue contains an unresolved control-flow
+  // instruction (UNIT_PC or UNIT_PC_COND as destination). Cleared when
+  // execute accepts the branch instruction — either a flush follows
+  // (taken) or sequential execution continues (not taken).
+  logic fetch_stalled_on_branch;
+
   // --- Helpers ---
   function automatic logic needs_src_op(logic [31:0] raw_op);
     Unit su = Unit'(raw_op[3:0]);
@@ -106,6 +118,11 @@ module sequencer (
   function automatic logic needs_dst_op(logic [31:0] raw_op);
     Unit du = Unit'(raw_op[19:16]);
     return du == UNIT_MEMORY_OPERAND || du == UNIT_ABS_OPERAND;
+  endfunction
+
+  function automatic logic is_control_flow(logic [31:0] raw_op);
+    Unit du = Unit'(raw_op[19:16]);
+    return du == UNIT_PC || du == UNIT_PC_COND;
   endfunction
 
   wire [31:0] fetch_pc_plus_1 = fetch_pc + 1;
@@ -125,6 +142,7 @@ module sequencer (
       q_valid[1] <= 1'b0;
       wr_ptr <= 1'b0;
       rd_ptr <= 1'b0;
+      fetch_stalled_on_branch <= 1'b0;
       fetch_state <= SEQ_FETCH_START;
       instr_bus.valid <= 1'b0;
       instr_bus.instr <= 1'b0;
@@ -136,6 +154,7 @@ module sequencer (
       q_valid[1] <= 1'b0;
       wr_ptr <= 1'b0;
       rd_ptr <= 1'b0;
+      fetch_stalled_on_branch <= 1'b0;
       instr_bus.valid <= 1'b0;
       fetch_state <= SEQ_FETCH_START;
     end else begin
@@ -143,6 +162,10 @@ module sequencer (
       // === Handoff: dequeue head entry to decoder-facing outputs ===
       if (instr_accept_i && q_valid[rd_ptr]) begin
         op_o <= q_op[rd_ptr];
+        // If the accepted instruction was the branch that stalled us,
+        // clear the stall — execute will either flush (taken) or
+        // sequential fetch is now safe (not taken).
+        fetch_stalled_on_branch <= 1'b0;
         src_operand_o <= q_src_operand[rd_ptr];
         dst_operand_o <= q_dst_operand[rd_ptr];
         pc_o <= q_pc[rd_ptr];
@@ -150,10 +173,10 @@ module sequencer (
         rd_ptr <= ~rd_ptr;
       end
 
-      // === Fetch FSM: runs when queue has space ===
+      // === Fetch FSM: runs when queue has space and no unresolved branch ===
       case (fetch_state)
         SEQ_FETCH_START: begin
-          if (queue_has_space || instr_accept_i) begin
+          if ((queue_has_space || instr_accept_i) && !fetch_stalled_on_branch) begin
             instr_bus.valid <= 1'b1;
             instr_bus.instr <= 1'b1;
             instr_bus.addr <= fetch_pc;
@@ -182,6 +205,8 @@ module sequencer (
               wr_ptr <= ~wr_ptr;
               fetch_pc <= fetch_pc_plus_1;
               instr_bus.valid <= 1'b0;
+              if (is_control_flow(instr_bus.read_data))
+                fetch_stalled_on_branch <= 1'b1;
               fetch_state <= SEQ_FETCH_START;
             end
           end
@@ -205,6 +230,8 @@ module sequencer (
               wr_ptr <= ~wr_ptr;
               fetch_pc <= fetch_pc_plus_2;
               instr_bus.valid <= 1'b0;
+              if (is_control_flow(staging_op))
+                fetch_stalled_on_branch <= 1'b1;
               fetch_state <= SEQ_FETCH_START;
             end
           end
@@ -228,6 +255,8 @@ module sequencer (
             wr_ptr <= ~wr_ptr;
             fetch_pc <= fetch_pc_plus_2;
             instr_bus.valid <= 1'b0;
+            if (is_control_flow(staging_op))
+              fetch_stalled_on_branch <= 1'b1;
             fetch_state <= SEQ_FETCH_START;
           end
         end

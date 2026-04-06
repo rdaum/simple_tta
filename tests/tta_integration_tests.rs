@@ -2659,4 +2659,200 @@ mod tests {
 
         Ok(())
     }
+
+    // --- Fetch policy tests (no wrong-path fetch past branches) ---
+
+    #[test]
+    fn test_cond_branch_not_taken_queue_partial() -> Result<(), Box<dyn std::error::Error>> {
+        // Conditional branch (not taken) with instructions before and after.
+        // The fetch FSM should stall at the branch, NOT prefetch past it.
+        // After the branch resolves as not-taken, sequential fetch resumes.
+        // The instruction after the branch writes to a distinct address —
+        // if it had been wrongly prefetched ahead of the branch, we'd see
+        // timing anomalies, but correctness is the main check here.
+        let runtime = create_runtime()?;
+        let mut tta = runtime
+            .create_model_simple::<TtaTestbench>()
+            .map_err(|e| format!("Failed to create model: {:?}", e))?;
+        let mut helper = TtaTestHelper::new();
+
+        tta.rst_i = 1;
+        tta.clk_i = 0;
+        tta.instr_ready_i = 0;
+        tta.data_ready_i = 0;
+        tta.instr_data_read_i = 0;
+        tta.data_data_read_i = 0;
+
+        // addr 0: store 0x11 → mem[100] (queued before branch)
+        // addr 1: set cond = 0
+        // addr 2-3: branch to addr 6 (NOT taken, cond=0)
+        // addr 4: store 0x22 → mem[101] (should execute, but NOT prefetched past branch)
+        // addr 5: store 0x33 → mem[102]
+        let program = vec![
+            instr().src(Unit::UNIT_ABS_IMMEDIATE).si(0x11).dst(Unit::UNIT_MEMORY_IMMEDIATE).di(100),
+            instr().src(Unit::UNIT_ABS_IMMEDIATE).si(0).dst(Unit::UNIT_COND),
+            instr().src(Unit::UNIT_ABS_OPERAND).soperand(6).dst(Unit::UNIT_PC_COND),
+            instr().src(Unit::UNIT_ABS_IMMEDIATE).si(0x22).dst(Unit::UNIT_MEMORY_IMMEDIATE).di(101),
+            instr().src(Unit::UNIT_ABS_IMMEDIATE).si(0x33).dst(Unit::UNIT_MEMORY_IMMEDIATE).di(102),
+        ];
+
+        let mut machine_code = Vec::new();
+        for i in &program {
+            machine_code.extend(i.assemble());
+        }
+        helper.load_instructions(&machine_code, 0);
+        helper.run_until_reset_released(&mut tta)?;
+        helper.run_for_cycles(&mut tta, 300);
+
+        assert_eq!(helper.get_data_memory(100), 0x11);
+        assert_eq!(helper.get_data_memory(101), 0x22, "Not-taken branch: fall-through should execute");
+        assert_eq!(helper.get_data_memory(102), 0x33);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_cond_branch_taken_with_queued_fallthrough() -> Result<(), Box<dyn std::error::Error>> {
+        // A 1-word instruction is queued, then a conditional branch (taken).
+        // The fetch policy should NOT have fetched past the branch into
+        // the fall-through path. The fall-through instruction writes to
+        // a distinct sink to detect wrong-path execution.
+        let runtime = create_runtime()?;
+        let mut tta = runtime
+            .create_model_simple::<TtaTestbench>()
+            .map_err(|e| format!("Failed to create model: {:?}", e))?;
+        let mut helper = TtaTestHelper::new();
+
+        tta.rst_i = 1;
+        tta.clk_i = 0;
+        tta.instr_ready_i = 0;
+        tta.data_ready_i = 0;
+        tta.instr_data_read_i = 0;
+        tta.data_data_read_i = 0;
+
+        // addr 0: set cond = 1
+        // addr 1-2: branch to addr 5 (TAKEN)
+        // addr 3: store 0xBAD → mem[400] (wrong path — must NOT execute)
+        // addr 4: nop
+        // addr 5: store 0xOK → mem[100]
+        let program = vec![
+            instr().src(Unit::UNIT_ABS_IMMEDIATE).si(1).dst(Unit::UNIT_COND),
+            instr().src(Unit::UNIT_ABS_OPERAND).soperand(5).dst(Unit::UNIT_PC_COND),
+            instr().src(Unit::UNIT_ABS_IMMEDIATE).si(0xBAD).dst(Unit::UNIT_MEMORY_IMMEDIATE).di(400),
+            instr().src(Unit::UNIT_ABS_IMMEDIATE).si(0).dst(Unit::UNIT_REGISTER).di(0),
+            instr().src(Unit::UNIT_ABS_IMMEDIATE).si(0x999).dst(Unit::UNIT_MEMORY_IMMEDIATE).di(100),
+        ];
+
+        let mut machine_code = Vec::new();
+        for i in &program {
+            machine_code.extend(i.assemble());
+        }
+        helper.load_instructions(&machine_code, 0);
+        helper.run_until_reset_released(&mut tta)?;
+        helper.run_for_cycles(&mut tta, 300);
+
+        assert_eq!(helper.get_data_memory(100), 0x999, "Branch target should execute");
+        assert_eq!(helper.get_data_memory(400), 0,
+            "Fall-through must never execute — fetch policy should prevent prefetching past branch");
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_back_to_back_control_flow() -> Result<(), Box<dyn std::error::Error>> {
+        // Two consecutive branches. The fetch stall policy should handle
+        // each one independently — stall after the first, resume after
+        // it resolves, stall after the second.
+        let runtime = create_runtime()?;
+        let mut tta = runtime
+            .create_model_simple::<TtaTestbench>()
+            .map_err(|e| format!("Failed to create model: {:?}", e))?;
+        let mut helper = TtaTestHelper::new();
+
+        tta.rst_i = 1;
+        tta.clk_i = 0;
+        tta.instr_ready_i = 0;
+        tta.data_ready_i = 0;
+        tta.instr_data_read_i = 0;
+        tta.data_data_read_i = 0;
+
+        // addr 0-1: jump to addr 4 (first branch)
+        // addr 2: store 0xBAD1 → mem[400] (skipped)
+        // addr 3: nop
+        // addr 4-5: jump to addr 8 (second branch, immediately at target of first)
+        // addr 6: store 0xBAD2 → mem[401] (skipped)
+        // addr 7: nop
+        // addr 8: store 0xACE → mem[100]
+        // addr 9: PC → mem[101]
+        let program = vec![
+            instr().src(Unit::UNIT_ABS_OPERAND).soperand(4).dst(Unit::UNIT_PC),
+            instr().src(Unit::UNIT_ABS_IMMEDIATE).si(0xBA1).dst(Unit::UNIT_MEMORY_IMMEDIATE).di(400),
+            instr().src(Unit::UNIT_ABS_IMMEDIATE).si(0).dst(Unit::UNIT_REGISTER).di(0),
+            instr().src(Unit::UNIT_ABS_OPERAND).soperand(8).dst(Unit::UNIT_PC),
+            instr().src(Unit::UNIT_ABS_IMMEDIATE).si(0xBA2).dst(Unit::UNIT_MEMORY_IMMEDIATE).di(401),
+            instr().src(Unit::UNIT_ABS_IMMEDIATE).si(0).dst(Unit::UNIT_REGISTER).di(0),
+            instr().src(Unit::UNIT_ABS_IMMEDIATE).si(0xACE).dst(Unit::UNIT_MEMORY_IMMEDIATE).di(100),
+            instr().src(Unit::UNIT_PC).dst(Unit::UNIT_MEMORY_IMMEDIATE).di(101),
+        ];
+
+        let mut machine_code = Vec::new();
+        for i in &program {
+            machine_code.extend(i.assemble());
+        }
+        helper.load_instructions(&machine_code, 0);
+        helper.run_until_reset_released(&mut tta)?;
+        helper.run_for_cycles(&mut tta, 300);
+
+        assert_eq!(helper.get_data_memory(100), 0xACE);
+        assert_eq!(helper.get_data_memory(101), 10, "PC at addr 9 should be 10");
+        assert_eq!(helper.get_data_memory(400), 0, "First branch wrong-path must not execute");
+        assert_eq!(helper.get_data_memory(401), 0, "Second branch wrong-path must not execute");
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_pc_exact_around_branch_with_queue() -> Result<(), Box<dyn std::error::Error>> {
+        // Verify exact UNIT_PC values when a branch sits in the queue
+        // alongside non-branch instructions.
+        let runtime = create_runtime()?;
+        let mut tta = runtime
+            .create_model_simple::<TtaTestbench>()
+            .map_err(|e| format!("Failed to create model: {:?}", e))?;
+        let mut helper = TtaTestHelper::new();
+
+        tta.rst_i = 1;
+        tta.clk_i = 0;
+        tta.instr_ready_i = 0;
+        tta.data_ready_i = 0;
+        tta.instr_data_read_i = 0;
+        tta.data_data_read_i = 0;
+
+        // addr 0: PC → mem[100]        (PC = 1)
+        // addr 1: set cond = 0
+        // addr 2-3: pc_cond to addr 6  (not taken, 2-word, PC = 4)
+        // addr 4: PC → mem[101]        (PC = 5)
+        // addr 5: PC → mem[102]        (PC = 6)
+        let program = vec![
+            instr().src(Unit::UNIT_PC).dst(Unit::UNIT_MEMORY_IMMEDIATE).di(100),
+            instr().src(Unit::UNIT_ABS_IMMEDIATE).si(0).dst(Unit::UNIT_COND),
+            instr().src(Unit::UNIT_ABS_OPERAND).soperand(6).dst(Unit::UNIT_PC_COND),
+            instr().src(Unit::UNIT_PC).dst(Unit::UNIT_MEMORY_IMMEDIATE).di(101),
+            instr().src(Unit::UNIT_PC).dst(Unit::UNIT_MEMORY_IMMEDIATE).di(102),
+        ];
+
+        let mut machine_code = Vec::new();
+        for i in &program {
+            machine_code.extend(i.assemble());
+        }
+        helper.load_instructions(&machine_code, 0);
+        helper.run_until_reset_released(&mut tta)?;
+        helper.run_for_cycles(&mut tta, 300);
+
+        assert_eq!(helper.get_data_memory(100), 1, "PC at addr 0 should be 1");
+        assert_eq!(helper.get_data_memory(101), 5, "PC at addr 4 (after not-taken branch) should be 5");
+        assert_eq!(helper.get_data_memory(102), 6, "PC at addr 5 should be 6");
+
+        Ok(())
+    }
 }
