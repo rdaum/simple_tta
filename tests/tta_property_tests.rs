@@ -2859,5 +2859,286 @@ mod property_tests {
         }
     }
 
+    // --- Prefetch-specific hazard tests ---
+
+    /// Taken/not-taken branch alternation: set cond, branch (taken),
+    /// then at the target clear cond and branch again (not taken).
+    /// Verifies the prefetch pipeline handles rapid branch toggling.
+    #[test]
+    fn prop_branch_taken_then_not_taken(
+        _dummy in 0u32..1,
+    ) {
+        let runtime = create_runtime().unwrap();
+        let mut tta = runtime.create_model_simple::<TtaTestbench>().unwrap();
+        let mut helper = TtaPropertyHelper::new();
+
+        tta.rst_i = 1;
+        tta.clk_i = 0;
+        tta.instr_ready_i = 0;
+        tta.data_ready_i = 0;
+        tta.instr_data_read_i = 0;
+        tta.data_data_read_i = 0;
+
+        // addr 0:   set cond = 1
+        // addr 1-2: branch to addr 5 (TAKEN — skip addr 3-4)
+        // addr 3:   store 0xBAD → mem[100]  (skipped)
+        // addr 4:   nop padding
+        // addr 5:   set cond = 0
+        // addr 6-7: branch to addr 10 (NOT TAKEN — fall through)
+        // addr 8:   store 0x111 → mem[100]  (should execute)
+        // addr 9:   store 0x222 → mem[101]  (should execute)
+        let program = vec![
+            // addr 0
+            instr().src(Unit::UNIT_ABS_IMMEDIATE).si(1).dst(Unit::UNIT_COND),
+            // addr 1-2: branch taken → addr 5
+            instr().src(Unit::UNIT_ABS_OPERAND).soperand(5).dst(Unit::UNIT_PC_COND),
+            // addr 3 (skipped)
+            instr().src(Unit::UNIT_ABS_OPERAND).soperand(0xBAD).dst(Unit::UNIT_MEMORY_IMMEDIATE).di(100),
+            // addr 5: set cond = 0
+            instr().src(Unit::UNIT_ABS_IMMEDIATE).si(0).dst(Unit::UNIT_COND),
+            // addr 6-7: branch not taken → addr 10
+            instr().src(Unit::UNIT_ABS_OPERAND).soperand(10).dst(Unit::UNIT_PC_COND),
+            // addr 8: should execute (branch not taken)
+            instr().src(Unit::UNIT_ABS_IMMEDIATE).si(0x111).dst(Unit::UNIT_MEMORY_IMMEDIATE).di(100),
+            // addr 9
+            instr().src(Unit::UNIT_ABS_IMMEDIATE).si(0x222).dst(Unit::UNIT_MEMORY_IMMEDIATE).di(101),
+        ];
+
+        let mut machine_code = Vec::new();
+        for instr in program {
+            machine_code.extend(instr.assemble());
+        }
+        helper.load_instructions(&machine_code, 0);
+        helper.run_until_reset_released(&mut tta).unwrap();
+        helper.run_for_cycles(&mut tta, 300);
+
+        prop_assert_eq!(helper.get_data_memory(100), 0x111,
+            "After taken then not-taken branch, addr 8 should write 0x111");
+        prop_assert_eq!(helper.get_data_memory(101), 0x222,
+            "Addr 9 should execute after the not-taken branch");
+    }
+
+    /// Multiword instruction prefetched behind a branch boundary and
+    /// then discarded. The sequencer may have started fetching the
+    /// operand words of a 2-word instruction at addr 2 while execute
+    /// processes the jump at addr 0. The prefetch must be discarded.
+    #[test]
+    fn prop_multiword_prefetch_discarded_on_branch(
+        _dummy in 0u32..1,
+    ) {
+        let runtime = create_runtime().unwrap();
+        let mut tta = runtime.create_model_simple::<TtaTestbench>().unwrap();
+        let mut helper = TtaPropertyHelper::new();
+
+        tta.rst_i = 1;
+        tta.clk_i = 0;
+        tta.instr_ready_i = 0;
+        tta.data_ready_i = 0;
+        tta.instr_data_read_i = 0;
+        tta.data_data_read_i = 0;
+
+        // addr 0-1: jump to addr 6
+        // addr 2-3: 2-word store 0xBAD → mem[100] (MEMORY_OPERAND dst, may be prefetched)
+        // addr 4-5: 2-word store 0xBAD → mem[101] (may be prefetched)
+        // addr 6:   store 0xACE → mem[100] (branch target)
+        // addr 7:   store 0xBEE → mem[101]
+        let program = vec![
+            // addr 0-1: jump
+            instr().src(Unit::UNIT_ABS_OPERAND).soperand(6).dst(Unit::UNIT_PC),
+            // addr 2-3: should be skipped (2-word: ABS_OPERAND src)
+            instr().src(Unit::UNIT_ABS_OPERAND).soperand(0xBAD)
+                   .dst(Unit::UNIT_MEMORY_IMMEDIATE).di(100),
+            // addr 4-5: should be skipped
+            instr().src(Unit::UNIT_ABS_OPERAND).soperand(0xBAD)
+                   .dst(Unit::UNIT_MEMORY_IMMEDIATE).di(101),
+            // addr 6: branch target
+            instr().src(Unit::UNIT_ABS_IMMEDIATE).si(0xACE)
+                   .dst(Unit::UNIT_MEMORY_IMMEDIATE).di(100),
+            // addr 7
+            instr().src(Unit::UNIT_ABS_IMMEDIATE).si(0xBEE)
+                   .dst(Unit::UNIT_MEMORY_IMMEDIATE).di(101),
+        ];
+
+        let mut machine_code = Vec::new();
+        for instr in program {
+            machine_code.extend(instr.assemble());
+        }
+        helper.load_instructions(&machine_code, 0);
+        helper.run_until_reset_released(&mut tta).unwrap();
+        helper.run_for_cycles(&mut tta, 300);
+
+        prop_assert_eq!(helper.get_data_memory(100), 0xACE,
+            "Branch target should write 0xACE, not 0xBAD from prefetched multiword instr");
+        prop_assert_eq!(helper.get_data_memory(101), 0xBEE,
+            "Instruction after branch target should execute");
+    }
+
+    /// Back-to-back instructions where the first is multi-cycle (memory
+    /// load) and the second is already waiting in SEQ_READY. Verifies
+    /// the prefetch → handoff path when execute takes multiple cycles.
+    #[test]
+    fn prop_seq_ready_handoff_after_multicycle_execute(
+        value in data_value(),
+    ) {
+        let runtime = create_runtime().unwrap();
+        let mut tta = runtime.create_model_simple::<TtaTestbench>().unwrap();
+        let mut helper = TtaPropertyHelper::new();
+
+        tta.rst_i = 1;
+        tta.clk_i = 0;
+        tta.instr_ready_i = 0;
+        tta.data_ready_i = 0;
+        tta.instr_data_read_i = 0;
+        tta.data_data_read_i = 0;
+
+        // Pre-fill data memory
+        helper.set_data_memory(50, value);
+
+        // Instruction 1 (addr 0): memory load from addr 50 → register 0
+        //   This is a multi-cycle execute (bus read through data_bus).
+        //   While execute waits for data_bus.ready, the sequencer should
+        //   prefetch instruction 2 and park in SEQ_READY.
+        // Instruction 2 (addr 1): copy register 0 → mem[200]
+        //   This should execute immediately after instruction 1 finishes,
+        //   since it was already prefetched.
+        let program = vec![
+            // addr 0: mem[50] → reg[0] (multi-cycle: data bus read)
+            instr().src(Unit::UNIT_MEMORY_IMMEDIATE).si(50)
+                   .dst(Unit::UNIT_REGISTER).di(0),
+            // addr 1: reg[0] → mem[200] (single-cycle, should be prefetched)
+            instr().src(Unit::UNIT_REGISTER).si(0)
+                   .dst(Unit::UNIT_MEMORY_IMMEDIATE).di(200),
+        ];
+
+        let mut machine_code = Vec::new();
+        for instr in program {
+            machine_code.extend(instr.assemble());
+        }
+        helper.load_instructions(&machine_code, 0);
+        helper.run_until_reset_released(&mut tta).unwrap();
+        helper.run_for_cycles(&mut tta, 200);
+
+        let result = helper.get_data_memory(200);
+        prop_assert_eq!(result, value,
+            "Prefetched instruction after multi-cycle execute should read correct value from register");
+    }
+
+    /// Exact PC values through a branch: verify PC before jump, at the
+    /// branch target, and after a multi-word instruction following the
+    /// branch. Covers the full prefetch invalidation + restart path.
+    #[test]
+    fn prop_pc_exact_through_branch(
+        _dummy in 0u32..1,
+    ) {
+        let runtime = create_runtime().unwrap();
+        let mut tta = runtime.create_model_simple::<TtaTestbench>().unwrap();
+        let mut helper = TtaPropertyHelper::new();
+
+        tta.rst_i = 1;
+        tta.clk_i = 0;
+        tta.instr_ready_i = 0;
+        tta.data_ready_i = 0;
+        tta.instr_data_read_i = 0;
+        tta.data_data_read_i = 0;
+
+        // addr 0:   read PC → mem[100]         (should be 1)
+        // addr 1-2: jump to addr 5
+        // addr 3:   store 0xBAD → mem[100]     (skipped)
+        // addr 4:   nop padding
+        // addr 5:   read PC → mem[101]         (should be 6)
+        // addr 6-7: store 0x42 via ABS_OPERAND → mem[102]  (2-word)
+        // addr 8:   read PC → mem[103]         (should be 9)
+        let program = vec![
+            // addr 0: PC → mem[100]
+            instr().src(Unit::UNIT_PC).dst(Unit::UNIT_MEMORY_IMMEDIATE).di(100),
+            // addr 1-2: jump to 5
+            instr().src(Unit::UNIT_ABS_OPERAND).soperand(5).dst(Unit::UNIT_PC),
+            // addr 3 (skipped)
+            instr().src(Unit::UNIT_ABS_OPERAND).soperand(0xBAD).dst(Unit::UNIT_MEMORY_IMMEDIATE).di(100),
+            // addr 5: PC → mem[101]
+            instr().src(Unit::UNIT_PC).dst(Unit::UNIT_MEMORY_IMMEDIATE).di(101),
+            // addr 6-7: 2-word store
+            instr().src(Unit::UNIT_ABS_OPERAND).soperand(0x42).dst(Unit::UNIT_MEMORY_IMMEDIATE).di(102),
+            // addr 8: PC → mem[103]
+            instr().src(Unit::UNIT_PC).dst(Unit::UNIT_MEMORY_IMMEDIATE).di(103),
+        ];
+
+        let mut machine_code = Vec::new();
+        for instr in program {
+            machine_code.extend(instr.assemble());
+        }
+        helper.load_instructions(&machine_code, 0);
+        helper.run_until_reset_released(&mut tta).unwrap();
+        helper.run_for_cycles(&mut tta, 300);
+
+        prop_assert_eq!(helper.get_data_memory(100), 1,
+            "PC at addr 0 should be 1 (not overwritten by skipped addr 3)");
+        prop_assert_eq!(helper.get_data_memory(101), 6,
+            "PC at branch target (addr 5) should be 6");
+        prop_assert_eq!(helper.get_data_memory(102), 0x42,
+            "2-word instruction after branch should execute correctly");
+        prop_assert_eq!(helper.get_data_memory(103), 9,
+            "PC at addr 8 (after 2-word instr at addr 6-7) should be 9");
+    }
+
+    /// Consecutive back-to-back branches: jump forward, then immediately
+    /// jump forward again at the target. Tests that the prefetch pipeline
+    /// handles multiple sequential flushes.
+    #[test]
+    fn prop_consecutive_branches(
+        _dummy in 0u32..1,
+    ) {
+        let runtime = create_runtime().unwrap();
+        let mut tta = runtime.create_model_simple::<TtaTestbench>().unwrap();
+        let mut helper = TtaPropertyHelper::new();
+
+        tta.rst_i = 1;
+        tta.clk_i = 0;
+        tta.instr_ready_i = 0;
+        tta.data_ready_i = 0;
+        tta.instr_data_read_i = 0;
+        tta.data_data_read_i = 0;
+
+        // addr 0-1: jump to addr 4
+        // addr 2:   store 0xBAD1 → mem[100] (skipped)
+        // addr 3:   nop padding
+        // addr 4-5: jump to addr 8
+        // addr 6:   store 0xBAD2 → mem[100] (skipped)
+        // addr 7:   nop padding
+        // addr 8:   store 0xOK → mem[100]
+        // addr 9:   read PC → mem[101]
+        let program = vec![
+            // addr 0-1: first jump
+            instr().src(Unit::UNIT_ABS_OPERAND).soperand(4).dst(Unit::UNIT_PC),
+            // addr 2 (skipped)
+            instr().src(Unit::UNIT_ABS_IMMEDIATE).si(0xBA1).dst(Unit::UNIT_MEMORY_IMMEDIATE).di(100),
+            // addr 3 padding
+            instr().src(Unit::UNIT_ABS_IMMEDIATE).si(0).dst(Unit::UNIT_REGISTER).di(0),
+            // addr 4-5: second jump
+            instr().src(Unit::UNIT_ABS_OPERAND).soperand(8).dst(Unit::UNIT_PC),
+            // addr 6 (skipped)
+            instr().src(Unit::UNIT_ABS_IMMEDIATE).si(0xBA2).dst(Unit::UNIT_MEMORY_IMMEDIATE).di(100),
+            // addr 7 padding
+            instr().src(Unit::UNIT_ABS_IMMEDIATE).si(0).dst(Unit::UNIT_REGISTER).di(0),
+            // addr 8: final target
+            instr().src(Unit::UNIT_ABS_IMMEDIATE).si(0x999).dst(Unit::UNIT_MEMORY_IMMEDIATE).di(100),
+            // addr 9: verify PC
+            instr().src(Unit::UNIT_PC).dst(Unit::UNIT_MEMORY_IMMEDIATE).di(101),
+        ];
+
+        let mut machine_code = Vec::new();
+        for instr in program {
+            machine_code.extend(instr.assemble());
+        }
+        helper.load_instructions(&machine_code, 0);
+        helper.run_until_reset_released(&mut tta).unwrap();
+        helper.run_for_cycles(&mut tta, 300);
+
+        prop_assert_eq!(helper.get_data_memory(100), 0x999,
+            "Only the final branch target should write to mem[100]");
+        prop_assert_eq!(helper.get_data_memory(101), 10,
+            "PC at addr 9 should be 10 after two consecutive jumps");
+    }
+
     }
 }
