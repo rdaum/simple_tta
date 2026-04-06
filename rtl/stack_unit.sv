@@ -13,7 +13,7 @@
 // following clock edge.
 module stack_unit #(
     parameter NUM_STACKS  = 8,
-    parameter STACK_DEPTH = 64
+    parameter STACK_DEPTH = 32
 ) (
     input wire clk_i,
     input wire rst_i,
@@ -22,7 +22,7 @@ module stack_unit #(
     input wire [2:0] stack_select_i,     // 0..NUM_STACKS-1
     input wire stack_push_i,
     input wire stack_pop_i,
-    input wire [5:0] stack_offset_i,     // For indexed access
+    input wire [4:0] stack_offset_i,     // For indexed access (0-31)
     input wire stack_index_read_i,
     input wire stack_index_write_i,
 

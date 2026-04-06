@@ -2,7 +2,7 @@
 // Top-level TTA core. Three stages cooperate:
 //
 //   sequencer  — prefetches opcode + operand words from instr_bus
-//   decoder    — combinational: splits opcode into unit + immediates
+//   decoder    — combinational: splits opcode into unit + immediates + flags
 //   execute    — reads the source, writes the destination via data_bus
 //
 // The sequencer and execute communicate via a valid/accept handshake:
@@ -14,7 +14,7 @@ module tta #(
     parameter NUM_REGISTERS  = 32,
     parameter NUM_ALUS       = 8,
     parameter NUM_STACKS     = 8,
-    parameter STACK_DEPTH    = 64,
+    parameter STACK_DEPTH    = 32,
     parameter BARRIER_DEPTH  = 32
 ) (
     input wire rst_i,           // Synchronous reset (active high)
@@ -83,17 +83,20 @@ module tta #(
       .dbg_prefetch_op_o()
 `endif
   );
-  logic [3:0] src_unit;
-  logic [3:0] dst_unit;
-  logic [11:0] si;
-  logic [11:0] di;
+
+  logic [4:0] src_unit;
+  logic [4:0] dst_unit;
+  logic [7:0] si;
+  logic [7:0] di;
+  logic [5:0] flags;
 
   decoder decoder (
       .op_i(op),
       .src_unit_o(src_unit),
       .si_o(si),
       .dst_unit_o(dst_unit),
-      .di_o(di)
+      .di_o(di),
+      .flags_o(flags)
   );
 
   execute #(
@@ -119,6 +122,7 @@ module tta #(
       .dst_unit_i(dst_unit),
       .dst_immediate_i(di),
       .dst_operand_i(dst_operand),
+      .flags_i(flags),
       .pc_write_o(pc_write),
       .pc_write_en_o(pc_write_en),
       .done_o(done_exec),

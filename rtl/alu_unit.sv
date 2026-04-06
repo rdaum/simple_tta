@@ -23,9 +23,9 @@ module alu_unit (
       ALU_NOP: result = 32'b0;
       ALU_ADD: result = a_data_i + b_data_i;
       ALU_SUB: result = a_data_i - b_data_i;
-      ALU_DIV: result = a_data_i / b_data_i;
-      ALU_MUL: result = a_data_i * b_data_i;
-      ALU_MOD: result = a_data_i % b_data_i;
+      ALU_DIV: result = 32'b0;  // handled by muldiv_unit
+      ALU_MUL: result = 32'b0;  // handled by muldiv_unit
+      ALU_MOD: result = 32'b0;  // handled by muldiv_unit
       ALU_EQL: result = {31'b0, (a_data_i == b_data_i)};
       ALU_SL:  result = a_data_i << b_data_i[4:0];
       ALU_SR:  result = a_data_i >> b_data_i[4:0];

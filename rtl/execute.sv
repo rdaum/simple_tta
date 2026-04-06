@@ -1,33 +1,38 @@
+`include "common.vh"
+
 // Main execution engine. Each TTA instruction is a single *move* from a
 // source unit to a destination unit. This module resolves the source value
 // (EXEC_START_SRC phase), then writes it to the destination (EXEC_START_DST
 // phase). Memory and stack accesses require extra wait states; register and
 // ALU moves typically complete in one or two cycles.
 //
-// Immediate field bit layout (12 bits from the instruction word):
-//   Registers:       [4:0] = register index (0..NUM_REGISTERS-1)
-//   ALU lanes:       [2:0] = lane index (0..NUM_ALUS-1)
-//   Stack push/pop:  [2:0] = stack ID (0..NUM_STACKS-1)
-//   Stack index:     [2:0] = stack ID, [8:3] = offset from top
-//   Memory imm:      full 12 bits zero-extended to a 32-bit word address
+// Immediate field (8 bits from the instruction word):
+//   REG/REG_VALUE/REG_TAG: [4:0] = register index (0..NUM_REGISTERS-1)
+//   REG_DEREF:             [4:0] = register index, [7:5] = word offset (0-7)
+//   ALU units:             [2:0] = lane index (0..NUM_ALUS-1)
+//   STACK push/pop:        [2:0] = stack ID (0..NUM_STACKS-1)
+//   STACK_INDEX:           [2:0] = stack ID, [7:3] = offset from top
+//   MEM_IMM:               full 8 bits = word address (0-255)
+//   IMM:                   full 8 bits = literal value (0-255)
 module execute #(
     parameter NUM_REGISTERS  = 32,
     parameter NUM_ALUS       = 8,
     parameter NUM_STACKS     = 8,
-    parameter STACK_DEPTH    = 64,
+    parameter STACK_DEPTH    = 32,
     parameter BARRIER_DEPTH  = 32
 ) (
     input wire clk_i,                   // System clock
     input wire rst_i,                   // Synchronous reset (active high)
     input wire [31:0] pc_i,             // Current program counter (for UNIT_PC reads)
-    input logic [3:0] src_unit_i,       // Source unit selector (from decoder)
-    input logic [11:0] src_immediate_i, // Source immediate field
+    input logic [4:0] src_unit_i,       // Source unit selector (from decoder)
+    input logic [7:0] src_immediate_i,  // Source immediate field
     input logic [31:0] src_operand_i,   // Source 32-bit operand (from sequencer)
-    input logic [3:0] dst_unit_i,       // Destination unit selector (from decoder)
-    input logic [11:0] dst_immediate_i, // Destination immediate field
+    input logic [4:0] dst_unit_i,       // Destination unit selector (from decoder)
+    input logic [7:0] dst_immediate_i,  // Destination immediate field
     input logic [31:0] dst_operand_i,   // Destination 32-bit operand (from sequencer)
+    input logic [5:0] flags_i,          // Predicate and reserved flags
 
-    // Data memory bus (explicit ports replacing bus_if.master)
+    // Data memory bus
     output logic [3:0]  data_wstrb_o,
     output logic [31:0] data_write_data_o,
     output logic [31:0] data_addr_o,
@@ -44,7 +49,7 @@ module execute #(
     input  wire         instr_valid_i,  // Sequencer has a complete instruction ready
     output wire         instr_accept_o  // Execute is consuming the instruction this cycle
 );
-  // Architectural register file: 32 independent 32-bit cells.
+  // Architectural register file: NUM_REGISTERS independent 32-bit cells.
   reg reg_unit_select[0:NUM_REGISTERS-1];
   reg reg_unit_write[0:NUM_REGISTERS-1];
   reg [31:0] reg_in_data[0:NUM_REGISTERS-1];
@@ -63,8 +68,7 @@ module execute #(
     end
   endgenerate
 
-  // ALU bank: 8 independently addressable compute lanes.
-  // Results are combinational — available immediately from stored operands.
+  // ALU bank: NUM_ALUS independently addressable compute lanes.
   reg [31:0] alu_in_data_a[0:NUM_ALUS-1];
   reg [31:0] alu_in_data_b[0:NUM_ALUS-1];
   wire [31:0] alu_out_data[0:NUM_ALUS-1];
@@ -105,10 +109,10 @@ module execute #(
     end
   endfunction
 
-  // Shared stack unit implementing 8 logical stacks.
+  // Shared stack unit implementing NUM_STACKS logical stacks.
   logic [2:0] stack_select;
   logic stack_push, stack_pop;
-  logic [5:0] stack_offset;
+  logic [4:0] stack_offset;
   logic stack_index_read, stack_index_write;
   logic [31:0] stack_data_in, stack_data_out;
   /* verilator lint_off UNUSEDSIGNAL */
@@ -158,13 +162,6 @@ module execute #(
   );
 
   // Execution FSM: first resolve the source value, then write to destination.
-  //
-  //  EXEC_START_SRC ──→ (immediate units) ──→ EXEC_START_DST ──→ done
-  //       │                                         │
-  //       ├─→ EXEC_SRC_MEM_RETRIEVE ──→ EXEC_START_DST
-  //       └─→ EXEC_SRC_STACK_WAIT   ──→ EXEC_START_DST
-  //                                         │
-  //                                         └─→ EXEC_DST_STACK_WAIT ──→ done
   typedef enum {
     EXEC_START_SRC,        // Begin source resolution (fuses dst for immediate moves)
     EXEC_SRC_MEM_RETRIEVE, // Wait for data_ready_i on a memory read
@@ -179,7 +176,6 @@ module execute #(
   logic [31:0] src_value;
 
   // Execute runs autonomously once triggered via the valid/accept handshake.
-  // exec_active stays high through multi-cycle operations until done_o fires.
   logic exec_active;
 
   // Accept is combinational: fires for exactly one cycle when a valid
@@ -188,90 +184,12 @@ module execute #(
   logic stack_wait_armed;
 
   // 1-bit condition register for conditional branches.
-  // Written via UNIT_COND (nonzero → 1, zero → 0).
-  // Read via UNIT_COND (returns 0 or 1).
-  // Tested by UNIT_PC_COND (jump only if set).
   logic cond_reg;
 
-  // Sub-word access helpers: extract width and byte offset from immediate fields.
-  // Only applicable for MEMORY_OPERAND and REGISTER_POINTER where the
-  // immediate field is not used as the primary address. MEMORY_IMMEDIATE
-  // and UNIT_REGISTER always use word access (their immediate bits have
-  // different meanings).
-  logic [1:0] src_width, dst_width;
-  logic [1:0] src_byte_offset, dst_byte_offset;
-  always_comb begin
-    if (src_unit_i == UNIT_MEMORY_IMMEDIATE || src_unit_i == UNIT_REGISTER) begin
-      src_width       = ACCESS_WORD;
-      src_byte_offset = 2'b00;
-    end else begin
-      src_width       = src_immediate_i[11:10];
-      src_byte_offset = src_immediate_i[9:8];
-    end
-    if (dst_unit_i == UNIT_MEMORY_IMMEDIATE || dst_unit_i == UNIT_REGISTER) begin
-      dst_width       = ACCESS_WORD;
-      dst_byte_offset = 2'b00;
-    end else begin
-      dst_width       = dst_immediate_i[11:10];
-      dst_byte_offset = dst_immediate_i[9:8];
-    end
-  end
-
-  // Register access mode helpers: decode mode, index, and DEREF offset
-  // from the immediate field of UNIT_REGISTER instructions.
-  logic [1:0] src_reg_mode, dst_reg_mode;
-  logic [4:0]   src_reg_idx,  dst_reg_idx;
-  logic [2:0]   src_deref_offset, dst_deref_offset;
-  always_comb begin
-    src_reg_mode     = src_immediate_i[6:5];
-    src_reg_idx      = src_immediate_i[4:0];
-    src_deref_offset = src_immediate_i[9:7];
-    dst_reg_mode     = dst_immediate_i[6:5];
-    dst_reg_idx      = dst_immediate_i[4:0];
-    dst_deref_offset = dst_immediate_i[9:7];
-  end
-
-  // Stack access mode helpers: decode tag mode from the immediate field.
-  //   STACK_PUSH_POP: imm[4:3] = mode (RAW/VALUE/TAG)
-  //   STACK_INDEX:    imm[10:9] = mode (RAW/VALUE/TAG)
-  // Only RAW/VALUE/TAG are meaningful (DEREF is not applicable to stacks).
-  logic [1:0] src_stack_mode;
-  always_comb begin
-    case (src_unit_i)
-      UNIT_STACK_PUSH_POP: src_stack_mode = src_immediate_i[4:3];
-      UNIT_STACK_INDEX:    src_stack_mode = src_immediate_i[10:9];
-      default:             src_stack_mode = 2'b00; // RAW
-    endcase
-  end
-
-  // Compute write strobes from access width and byte offset.
-  function automatic [3:0] width_to_wstrb;
-    input [1:0] w;
-    input [1:0] off;
-    case (w)
-      ACCESS_BYTE:     width_to_wstrb = 4'b0001 << off;
-      ACCESS_HALFWORD: width_to_wstrb = 4'b0011 << off;
-      default:         width_to_wstrb = 4'b1111;
-    endcase
-  endfunction
-
-  // Extract and zero-extend sub-word data from a 32-bit bus read.
-  /* verilator lint_off UNUSEDSIGNAL */
-  function automatic [31:0] extract_read;
-    input [31:0] data;
-    input [1:0] w;
-    input [1:0] off;
-    reg [31:0] shifted;
-    begin
-      shifted = data >> (off * 8);
-      case (w)
-        ACCESS_BYTE:     extract_read = {24'b0, shifted[7:0]};
-        ACCESS_HALFWORD: extract_read = {16'b0, shifted[15:0]};
-        default:         extract_read = data;
-      endcase
-    end
-  endfunction
-  /* verilator lint_on UNUSEDSIGNAL */
+  // Predication: check flags against condition register.
+  wire pred_if_set   = flags_i[PRED_IF_SET];
+  wire pred_if_clear = flags_i[PRED_IF_CLEAR];
+  wire pred_skip = (pred_if_set && !cond_reg) || (pred_if_clear && cond_reg);
 
   integer ii;
   always @(posedge clk_i) begin
@@ -290,7 +208,7 @@ module execute #(
       barrier_push <= 1'b0;
       barrier_pop <= 1'b0;
       barrier_data_in <= 32'b0;
-      stack_offset <= 6'b0;
+      stack_offset <= 5'b0;
       stack_index_read <= 1'b0;
       stack_index_write <= 1'b0;
       stack_data_in <= 32'b0;
@@ -317,11 +235,6 @@ module execute #(
 
       done_o <= 1'b0;
     end else begin
-      // Run the FSM on the accept cycle (decoder outputs are now
-      // combinational from the queue head) AND while exec_active for
-      // multi-cycle operations. This eliminates the 1-cycle accept
-      // overhead — fused moves complete on the accept cycle itself.
-      // run_execute is combinational within this block, equivalent to a wire.
       reg run_execute;
       run_execute = (exec_active || instr_accept_o) && !done_o;
 
@@ -339,8 +252,6 @@ module execute #(
       if (run_execute) begin
       case (exec_state)
         EXEC_START_SRC: begin
-          // src_resolved: set by immediate sources so the destination can
-          // be evaluated in the same cycle (fused src+dst, no extra state).
           reg src_resolved;
           reg [31:0] resolved_src;
           src_resolved = 1'b0;
@@ -363,46 +274,43 @@ module execute #(
           barrier_push <= 1'b0;
           barrier_pop <= 1'b0;
           muldiv_start <= 1'b0;
+
+          // Predication: skip this instruction entirely if condition doesn't match
+          if (pred_skip) begin
+            done_o <= 1'b1;
+            exec_state <= EXEC_START_SRC;
+          end else
           case (src_unit_i)
-            // Source is memory-backed, so begin a bus read.
-            // Width (imm[11:10]) and byte offset (imm[9:8]) are applied
-            // when the data returns in EXEC_SRC_MEM_RETRIEVE. These fields
-            // are only active for MEMORY_OPERAND; MEMORY_IMMEDIATE always
-            // does a full-word read. For register-indirect, use DEREF mode.
             UNIT_MEMORY_OPERAND, UNIT_MEMORY_IMMEDIATE: begin
               case (src_unit_i)
-                UNIT_MEMORY_OPERAND: data_addr_o <= src_operand_i;
-                UNIT_MEMORY_IMMEDIATE: data_addr_o <= {20'b0, src_immediate_i};
-                default: data_addr_o <= 32'b0;
+                UNIT_MEMORY_OPERAND:   data_addr_o <= src_operand_i;
+                UNIT_MEMORY_IMMEDIATE: data_addr_o <= {24'b0, src_immediate_i};
+                default:               data_addr_o <= 32'b0;
               endcase
               data_valid_o <= 1'b1;
               exec_state <= EXEC_SRC_MEM_RETRIEVE;
             end
             UNIT_REGISTER: begin
-              case (src_reg_mode)
-                REG_RAW: begin
-                  reg_unit_select[src_reg_idx] <= 1'b1;
-                  resolved_src = reg_raw_data[src_reg_idx];
-                  src_value <= resolved_src;
-                  src_resolved = 1'b1;
-                end
-                REG_VALUE: begin
-                  resolved_src = reg_raw_data[src_reg_idx] & ~TAG_MASK_32;
-                  src_value <= resolved_src;
-                  src_resolved = 1'b1;
-                end
-                REG_TAG: begin
-                  resolved_src = reg_raw_data[src_reg_idx] & TAG_MASK_32;
-                  src_value <= resolved_src;
-                  src_resolved = 1'b1;
-                end
-                REG_DEREF: begin
-                  data_addr_o <= (reg_raw_data[src_reg_idx] & ~TAG_MASK_32)
-                                 + {29'b0, src_deref_offset};
-                  data_valid_o <= 1'b1;
-                  exec_state <= EXEC_SRC_MEM_RETRIEVE;
-                end
-              endcase
+              reg_unit_select[src_immediate_i[4:0]] <= 1'b1;
+              resolved_src = reg_raw_data[src_immediate_i[4:0]];
+              src_value <= resolved_src;
+              src_resolved = 1'b1;
+            end
+            UNIT_REG_VALUE: begin
+              resolved_src = reg_raw_data[src_immediate_i[4:0]] & ~TAG_MASK_32;
+              src_value <= resolved_src;
+              src_resolved = 1'b1;
+            end
+            UNIT_REG_TAG: begin
+              resolved_src = reg_raw_data[src_immediate_i[4:0]] & TAG_MASK_32;
+              src_value <= resolved_src;
+              src_resolved = 1'b1;
+            end
+            UNIT_REG_DEREF: begin
+              data_addr_o <= (reg_raw_data[src_immediate_i[4:0]] & ~TAG_MASK_32)
+                             + {29'b0, src_immediate_i[7:5]};
+              data_valid_o <= 1'b1;
+              exec_state <= EXEC_SRC_MEM_RETRIEVE;
             end
             UNIT_ALU_LEFT: begin
               resolved_src = alu_in_data_a[src_immediate_i[2:0]];
@@ -416,21 +324,19 @@ module execute #(
             end
             UNIT_ALU_RESULT: begin
               if (is_muldiv_op(alu_operation[src_immediate_i[2:0]])) begin
-                // Route through the multi-cycle muldiv unit.
                 muldiv_start <= 1'b1;
                 muldiv_oper  <= alu_operation[src_immediate_i[2:0]];
                 muldiv_a     <= alu_in_data_a[src_immediate_i[2:0]];
                 muldiv_b     <= alu_in_data_b[src_immediate_i[2:0]];
                 exec_state   <= EXEC_SRC_MULDIV_WAIT;
               end else begin
-                // Combinational ALU — read directly, no wait.
                 resolved_src = alu_out_data[src_immediate_i[2:0]];
                 src_value <= resolved_src;
                 src_resolved = 1'b1;
               end
             end
             UNIT_ABS_IMMEDIATE: begin
-              resolved_src = {20'b0, src_immediate_i};
+              resolved_src = {24'b0, src_immediate_i};
               src_value <= resolved_src;
               src_resolved = 1'b1;
             end
@@ -457,13 +363,12 @@ module execute #(
             end
             UNIT_STACK_INDEX: begin
               stack_select <= src_immediate_i[2:0];
-              stack_offset <= src_immediate_i[8:3];
+              stack_offset <= src_immediate_i[7:3];
               stack_index_read <= 1'b1;
               stack_wait_armed <= 1'b0;
               exec_state <= EXEC_SRC_STACK_WAIT;
             end
             UNIT_WRITE_BARRIER: begin
-              // Pop next entry from the barrier FIFO (GC drains it).
               barrier_pop <= 1'b1;
               stack_wait_armed <= 1'b0;
               exec_state <= EXEC_SRC_BARRIER_WAIT;
@@ -488,36 +393,36 @@ module execute #(
           // When the source resolved immediately, evaluate the destination
           // in the same cycle — fused execute, no extra state transition.
           if (src_resolved) begin
-            // Inline the EXEC_START_DST logic. For destinations that need
-            // extra cycles (stack), fall back to the EXEC_START_DST state.
             case (dst_unit_i)
               UNIT_REGISTER: begin
-                case (dst_reg_mode)
-                  REG_RAW: begin
-                    reg_unit_select[dst_reg_idx] <= 1'b1;
-                    reg_unit_write[dst_reg_idx] <= 1'b1;
-                    reg_in_data[dst_reg_idx] <= resolved_src;
-                  end
-                  REG_VALUE: begin
-                    reg_unit_select[dst_reg_idx] <= 1'b1;
-                    reg_unit_write[dst_reg_idx] <= 1'b1;
-                    reg_in_data[dst_reg_idx] <= (resolved_src & ~TAG_MASK_32)
-                                              | (reg_raw_data[dst_reg_idx] & TAG_MASK_32);
-                  end
-                  REG_TAG: begin
-                    reg_unit_select[dst_reg_idx] <= 1'b1;
-                    reg_unit_write[dst_reg_idx] <= 1'b1;
-                    reg_in_data[dst_reg_idx] <= (reg_raw_data[dst_reg_idx] & ~TAG_MASK_32)
-                                              | (resolved_src & TAG_MASK_32);
-                  end
-                  REG_DEREF: begin
-                    data_addr_o <= (reg_raw_data[dst_reg_idx] & ~TAG_MASK_32)
-                                   + {29'b0, dst_deref_offset};
-                    data_write_data_o <= resolved_src;
-                    data_wstrb_o <= 4'b1111;
-                    data_valid_o <= 1'b1;
-                  end
-                endcase
+                reg_unit_select[dst_immediate_i[4:0]] <= 1'b1;
+                reg_unit_write[dst_immediate_i[4:0]] <= 1'b1;
+                reg_in_data[dst_immediate_i[4:0]] <= resolved_src;
+                done_o <= 1'b1;
+                exec_state <= EXEC_START_SRC;
+              end
+              UNIT_REG_VALUE: begin
+                reg_unit_select[dst_immediate_i[4:0]] <= 1'b1;
+                reg_unit_write[dst_immediate_i[4:0]] <= 1'b1;
+                reg_in_data[dst_immediate_i[4:0]] <= (resolved_src & ~TAG_MASK_32)
+                                                   | (reg_raw_data[dst_immediate_i[4:0]] & TAG_MASK_32);
+                done_o <= 1'b1;
+                exec_state <= EXEC_START_SRC;
+              end
+              UNIT_REG_TAG: begin
+                reg_unit_select[dst_immediate_i[4:0]] <= 1'b1;
+                reg_unit_write[dst_immediate_i[4:0]] <= 1'b1;
+                reg_in_data[dst_immediate_i[4:0]] <= (reg_raw_data[dst_immediate_i[4:0]] & ~TAG_MASK_32)
+                                                   | (resolved_src & TAG_MASK_32);
+                done_o <= 1'b1;
+                exec_state <= EXEC_START_SRC;
+              end
+              UNIT_REG_DEREF: begin
+                data_addr_o <= (reg_raw_data[dst_immediate_i[4:0]] & ~TAG_MASK_32)
+                               + {29'b0, dst_immediate_i[7:5]};
+                data_write_data_o <= resolved_src;
+                data_wstrb_o <= 4'b1111;
+                data_valid_o <= 1'b1;
                 done_o <= 1'b1;
                 exec_state <= EXEC_START_SRC;
               end
@@ -560,8 +465,6 @@ module execute #(
                 exec_state <= EXEC_START_SRC;
               end
               default: begin
-                // Destinations needing extra cycles (memory, stack) go
-                // through the EXEC_START_DST state on the next cycle.
                 exec_state <= EXEC_START_DST;
               end
             endcase
@@ -570,30 +473,21 @@ module execute #(
         end
         EXEC_SRC_MEM_RETRIEVE: begin
           if (data_ready_i) begin
-            // Extract the requested byte/halfword/word and zero-extend.
-            src_value <= extract_read(data_read_data_i, src_width, src_byte_offset);
+            src_value <= data_read_data_i;
             data_valid_o <= 1'b0;
             exec_state <= EXEC_START_DST;
           end
         end
         EXEC_SRC_STACK_WAIT: begin
-          // Clear stack control signals after first cycle
           stack_push <= 1'b0;
           stack_pop <= 1'b0;
           stack_index_read <= 1'b0;
           stack_index_write <= 1'b0;
 
-          // Allow one cycle for stack_unit to consume the command before
-          // sampling ready/data on the following cycle.
           if (!stack_wait_armed) begin
             stack_wait_armed <= 1'b1;
           end else if (stack_ready) begin
-            // Apply tag mode mask to the stack read value.
-            case (src_stack_mode)
-              2'b01:   src_value <= stack_data_out & ~TAG_MASK_32; // VALUE
-              2'b10:   src_value <= stack_data_out & TAG_MASK_32;  // TAG
-              default: src_value <= stack_data_out;                // RAW
-            endcase
+            src_value <= stack_data_out;
             stack_wait_armed <= 1'b0;
             exec_state <= EXEC_START_DST;
           end
@@ -615,45 +509,42 @@ module execute #(
             exec_state <= EXEC_START_DST;
           end
         end
-        // Destination writeback consumes the resolved source value and applies
-        // the instruction side effect.
+        // Destination writeback (non-fused path — used when source was multi-cycle).
         EXEC_START_DST: begin
           case (dst_unit_i)
             UNIT_REGISTER: begin
-              case (dst_reg_mode)
-                REG_RAW: begin
-                  reg_unit_select[dst_reg_idx] <= 1'b1;
-                  reg_unit_write[dst_reg_idx] <= 1'b1;
-                  reg_in_data[dst_reg_idx] <= src_value;
-                end
-                REG_VALUE: begin
-                  // Preserve tag bits, replace payload.
-                  reg_unit_select[dst_reg_idx] <= 1'b1;
-                  reg_unit_write[dst_reg_idx] <= 1'b1;
-                  reg_in_data[dst_reg_idx] <= (src_value & ~TAG_MASK_32)
-                                            | (reg_raw_data[dst_reg_idx] & TAG_MASK_32);
-                end
-                REG_TAG: begin
-                  // Preserve payload, replace tag bits.
-                  reg_unit_select[dst_reg_idx] <= 1'b1;
-                  reg_unit_write[dst_reg_idx] <= 1'b1;
-                  reg_in_data[dst_reg_idx] <= (reg_raw_data[dst_reg_idx] & ~TAG_MASK_32)
-                                            | (src_value & TAG_MASK_32);
-                end
-                REG_DEREF: begin
-                  // Store src_value to memory at (reg & ~TAG_MASK) + offset.
-                  data_addr_o <= (reg_raw_data[dst_reg_idx] & ~TAG_MASK_32)
-                                 + {29'b0, dst_deref_offset};
-                  data_write_data_o <= src_value;
-                  data_wstrb_o <= 4'b1111;
-                  data_valid_o <= 1'b1;
-                end
-              endcase
+              reg_unit_select[dst_immediate_i[4:0]] <= 1'b1;
+              reg_unit_write[dst_immediate_i[4:0]] <= 1'b1;
+              reg_in_data[dst_immediate_i[4:0]] <= src_value;
+              done_o <= 1'b1;
+              exec_state <= EXEC_START_SRC;
+            end
+            UNIT_REG_VALUE: begin
+              reg_unit_select[dst_immediate_i[4:0]] <= 1'b1;
+              reg_unit_write[dst_immediate_i[4:0]] <= 1'b1;
+              reg_in_data[dst_immediate_i[4:0]] <= (src_value & ~TAG_MASK_32)
+                                                 | (reg_raw_data[dst_immediate_i[4:0]] & TAG_MASK_32);
+              done_o <= 1'b1;
+              exec_state <= EXEC_START_SRC;
+            end
+            UNIT_REG_TAG: begin
+              reg_unit_select[dst_immediate_i[4:0]] <= 1'b1;
+              reg_unit_write[dst_immediate_i[4:0]] <= 1'b1;
+              reg_in_data[dst_immediate_i[4:0]] <= (reg_raw_data[dst_immediate_i[4:0]] & ~TAG_MASK_32)
+                                                 | (src_value & TAG_MASK_32);
+              done_o <= 1'b1;
+              exec_state <= EXEC_START_SRC;
+            end
+            UNIT_REG_DEREF: begin
+              data_addr_o <= (reg_raw_data[dst_immediate_i[4:0]] & ~TAG_MASK_32)
+                             + {29'b0, dst_immediate_i[7:5]};
+              data_write_data_o <= src_value;
+              data_wstrb_o <= 4'b1111;
+              data_valid_o <= 1'b1;
               done_o <= 1'b1;
               exec_state <= EXEC_START_SRC;
             end
             UNIT_ALU_LEFT: begin
-              // Writing ALU_LEFT/RIGHT/OPERATOR configures an ALU lane.
               alu_in_data_a[dst_immediate_i[2:0]] <= src_value;
               done_o <= 1'b1;
               exec_state <= EXEC_START_SRC;
@@ -670,63 +561,49 @@ module execute #(
             end
             UNIT_MEMORY_OPERAND, UNIT_MEMORY_IMMEDIATE: begin
               case (dst_unit_i)
-                UNIT_MEMORY_OPERAND: data_addr_o <= dst_operand_i;
-                UNIT_MEMORY_IMMEDIATE: data_addr_o <= {20'b0, dst_immediate_i};
-                default: data_addr_o <= 32'b0;
+                UNIT_MEMORY_OPERAND:   data_addr_o <= dst_operand_i;
+                UNIT_MEMORY_IMMEDIATE: data_addr_o <= {24'b0, dst_immediate_i};
+                default:               data_addr_o <= 32'b0;
               endcase
-
               data_valid_o <= 1'b1;
-              // For sub-word writes, shift data into the correct byte lane(s).
-              // Word writes pass data and strobes through unchanged.
-              if (dst_width == ACCESS_WORD) begin
-                data_write_data_o <= src_value;
-                data_wstrb_o <= 4'b1111;
-              end else begin
-                data_write_data_o <= src_value << (dst_byte_offset * 8);
-                data_wstrb_o <= width_to_wstrb(dst_width, dst_byte_offset);
-              end
+              data_write_data_o <= src_value;
+              data_wstrb_o <= 4'b1111;
               done_o <= 1'b1;
               exec_state <= EXEC_START_SRC;
             end
             UNIT_STACK_PUSH_POP: begin
-              // Push writes src_value to the selected stack.
-              stack_select <= dst_immediate_i[2:0];  // Stack ID from bits 2:0
+              stack_select <= dst_immediate_i[2:0];
               stack_data_in <= src_value;
               stack_push <= 1'b1;
               stack_wait_armed <= 1'b0;
               exec_state <= EXEC_DST_STACK_WAIT;
             end
             UNIT_STACK_INDEX: begin
-              // Indexed writes implement poke-like behavior.
-              stack_select <= dst_immediate_i[2:0];     // Stack ID from bits 2:0
-              stack_offset <= dst_immediate_i[8:3];     // Offset from bits 8:3 (6 bits)
+              stack_select <= dst_immediate_i[2:0];
+              stack_offset <= dst_immediate_i[7:3];
               stack_data_in <= src_value;
               stack_index_write <= 1'b1;
               stack_wait_armed <= 1'b0;
               exec_state <= EXEC_DST_STACK_WAIT;
             end
             UNIT_WRITE_BARRIER: begin
-              // Push address to the write barrier FIFO for GC.
               barrier_data_in <= src_value;
               barrier_push <= 1'b1;
               stack_wait_armed <= 1'b0;
               exec_state <= EXEC_DST_BARRIER_WAIT;
             end
             UNIT_PC: begin
-              // Unconditional jump: set PC to src_value.
               pc_write_o <= src_value;
               pc_write_en_o <= 1'b1;
               done_o <= 1'b1;
               exec_state <= EXEC_START_SRC;
             end
             UNIT_COND: begin
-              // Write condition register: nonzero → 1, zero → 0.
               cond_reg <= (src_value != 32'b0);
               done_o <= 1'b1;
               exec_state <= EXEC_START_SRC;
             end
             UNIT_PC_COND: begin
-              // Conditional jump: set PC to src_value only if cond_reg is set.
               if (cond_reg) begin
                   pc_write_o <= src_value;
                   pc_write_en_o <= 1'b1;
@@ -738,19 +615,14 @@ module execute #(
               done_o <= 1'b1;
               exec_state <= EXEC_START_SRC;
             end
-
           endcase
-
         end
         EXEC_DST_STACK_WAIT: begin
-          // Clear the one-cycle stack command strobes while waiting for ready.
           stack_push <= 1'b0;
           stack_pop <= 1'b0;
           stack_index_read <= 1'b0;
           stack_index_write <= 1'b0;
 
-          // Allow one cycle for stack_unit to consume the command before
-          // checking for completion on the following cycle.
           if (!stack_wait_armed) begin
             stack_wait_armed <= 1'b1;
           end else if (stack_ready) begin

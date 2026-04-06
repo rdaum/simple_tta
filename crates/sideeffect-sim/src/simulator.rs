@@ -23,6 +23,7 @@ pub fn create_tta_runtime() -> Result<VerilatorRuntime> {
         Utf8Path::new("../../rtl/execute.sv"),
         Utf8Path::new("../../rtl/register_unit.sv"),
         Utf8Path::new("../../rtl/alu_unit.sv"),
+        Utf8Path::new("../../rtl/muldiv_unit.sv"),
         Utf8Path::new("../../rtl/stack_unit.sv"),
         Utf8Path::new("../../rtl/barrier_unit.sv"),
     ];
@@ -47,6 +48,7 @@ pub fn create_simtop_runtime() -> Result<VerilatorRuntime> {
         Utf8Path::new("../../rtl/execute.sv"),
         Utf8Path::new("../../rtl/register_unit.sv"),
         Utf8Path::new("../../rtl/alu_unit.sv"),
+        Utf8Path::new("../../rtl/muldiv_unit.sv"),
         Utf8Path::new("../../rtl/stack_unit.sv"),
         Utf8Path::new("../../rtl/barrier_unit.sv"),
         Utf8Path::new("../../rtl/blkram.sv"),

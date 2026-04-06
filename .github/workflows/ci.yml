@@ -37,8 +37,9 @@ jobs:
         run: |
           verilator --lint-only -Wall -sv -Irtl \
             rtl/common.vh rtl/decoder.sv rtl/register_unit.sv \
-            rtl/alu_unit.sv rtl/stack_unit.sv rtl/barrier_unit.sv \
-            rtl/blkram.sv rtl/sequencer.sv rtl/execute.sv rtl/tta.sv \
+            rtl/alu_unit.sv rtl/muldiv_unit.sv rtl/stack_unit.sv \
+            rtl/barrier_unit.sv rtl/blkram.sv rtl/sequencer.sv \
+            rtl/execute.sv rtl/tta.sv \
             rtl/cmod_a35t_top.sv --top-module cmod_a35t_top
 
   synthesize:
@@ -56,9 +57,9 @@ jobs:
           yosys -p "
             read_verilog -sv \
               rtl/common.vh rtl/decoder.sv rtl/register_unit.sv \
-              rtl/alu_unit.sv rtl/stack_unit.sv rtl/barrier_unit.sv \
-              rtl/blkram.sv rtl/sequencer.sv rtl/execute.sv rtl/tta.sv \
-              rtl/cmod_a35t_top.sv;
+              rtl/alu_unit.sv rtl/muldiv_unit.sv rtl/stack_unit.sv \
+              rtl/barrier_unit.sv rtl/blkram.sv rtl/sequencer.sv \
+              rtl/execute.sv rtl/tta.sv rtl/cmod_a35t_top.sv;
             hierarchy -top cmod_a35t_top;
             proc; opt;
             synth -top cmod_a35t_top

@@ -1,7 +1,7 @@
 use marlin::verilator::{VerilatedModelConfig, VerilatorRuntime};
 use std::collections::HashMap;
 
-use sideeffect_sim::{create_tta_runtime, instr, AccessWidth, RegMode, TtaTestbench, Unit};
+use sideeffect_sim::{create_tta_runtime, instr, TtaTestbench, Unit};
 use sideeffect_sim::dataflow::Graph;
 
 fn create_runtime() -> Result<VerilatorRuntime, Box<dyn std::error::Error>> {
@@ -184,8 +184,8 @@ mod tests {
         // 2. Move register 0 to memory address 123
         let program = vec![
             instr()
-                .src(Unit::UNIT_ABS_IMMEDIATE)
-                .si(666)
+                .src(Unit::UNIT_ABS_OPERAND)
+                .soperand(666)
                 .dst(Unit::UNIT_REGISTER)
                 .di(0),
             instr()
@@ -320,8 +320,8 @@ mod tests {
         // 3. Load from register[1] via DEREF to memory[200]
         let program = vec![
             instr()
-                .src(Unit::UNIT_ABS_IMMEDIATE)
-                .si(666)
+                .src(Unit::UNIT_ABS_OPERAND)
+                .soperand(666)
                 .dst(Unit::UNIT_MEMORY_IMMEDIATE)
                 .di(124),
             instr()
@@ -423,8 +423,8 @@ mod tests {
         let program = vec![
             // Load 666 into ALU left input
             instr()
-                .src(Unit::UNIT_ABS_IMMEDIATE)
-                .si(666)
+                .src(Unit::UNIT_ABS_OPERAND)
+                .soperand(666)
                 .dst(Unit::UNIT_ALU_LEFT)
                 .di(0),
             // Load 111 into ALU right input
@@ -574,8 +574,8 @@ mod tests {
             instr()
                 .src(Unit::UNIT_REGISTER)
                 .si(6)
-                .dst(Unit::UNIT_MEMORY_IMMEDIATE)
-                .di(400),
+                .dst(Unit::UNIT_MEMORY_OPERAND)
+                .doperand(400),
         ];
 
         let mut machine_code = Vec::new();
@@ -640,16 +640,16 @@ mod tests {
             instr()
                 .src(Unit::UNIT_REGISTER)
                 .si(0)
-                .dst(Unit::UNIT_MEMORY_IMMEDIATE)
-                .di(300),
+                .dst(Unit::UNIT_MEMORY_OPERAND)
+                .doperand(300),
             // Pop second value (should be 0) to register 1
             instr().pop_to_reg(0, 1),
             // Store register 1 to memory 301 (second pop result)
             instr()
                 .src(Unit::UNIT_REGISTER)
                 .si(1)
-                .dst(Unit::UNIT_MEMORY_IMMEDIATE)
-                .di(301),
+                .dst(Unit::UNIT_MEMORY_OPERAND)
+                .doperand(301),
         ];
 
         let mut machine_code = Vec::new();
@@ -718,7 +718,7 @@ mod tests {
                     .src(Unit::UNIT_REGISTER)
                     .si(0)
                     .dst(Unit::UNIT_MEMORY_IMMEDIATE)
-                    .di(result_addr as u16),
+                    .di(result_addr as u8),
             );
         }
 
@@ -781,8 +781,8 @@ mod tests {
             instr()
                 .src(Unit::UNIT_REGISTER)
                 .si(5)
-                .dst(Unit::UNIT_MEMORY_IMMEDIATE)
-                .di(400),
+                .dst(Unit::UNIT_MEMORY_OPERAND)
+                .doperand(400),
         ];
 
         let mut machine_code = Vec::new();
@@ -845,8 +845,8 @@ mod tests {
             instr()
                 .src(Unit::UNIT_REGISTER)
                 .si(10)
-                .dst(Unit::UNIT_MEMORY_IMMEDIATE)
-                .di(500),
+                .dst(Unit::UNIT_MEMORY_OPERAND)
+                .doperand(500),
             // Then test register load
             instr()
                 .src(Unit::UNIT_ABS_IMMEDIATE)
@@ -856,8 +856,8 @@ mod tests {
             instr()
                 .src(Unit::UNIT_REGISTER)
                 .si(7)
-                .dst(Unit::UNIT_MEMORY_IMMEDIATE)
-                .di(501),
+                .dst(Unit::UNIT_MEMORY_OPERAND)
+                .doperand(501),
             // Now test poke: push 0, load 1 into reg, poke
             instr().push_immediate(0, 0),
             instr()
@@ -870,8 +870,8 @@ mod tests {
             instr()
                 .src(Unit::UNIT_REGISTER)
                 .si(11)
-                .dst(Unit::UNIT_MEMORY_IMMEDIATE)
-                .di(600),
+                .dst(Unit::UNIT_MEMORY_OPERAND)
+                .doperand(600),
         ];
 
         let mut machine_code = Vec::new();
@@ -939,14 +939,14 @@ mod tests {
             instr()
                 .src(Unit::UNIT_REGISTER)
                 .si(6)
-                .dst(Unit::UNIT_MEMORY_IMMEDIATE)
-                .di(400), // Store reg 6 to mem 400
+                .dst(Unit::UNIT_MEMORY_OPERAND)
+                .doperand(400), // Store reg 6 to mem 400
             instr().stack_peek(0, 1, 7),   // Peek stack 0 offset 1 (should get 99) into reg 7
             instr()
                 .src(Unit::UNIT_REGISTER)
                 .si(7)
-                .dst(Unit::UNIT_MEMORY_IMMEDIATE)
-                .di(401), // Store reg 7 to mem 401
+                .dst(Unit::UNIT_MEMORY_OPERAND)
+                .doperand(401), // Store reg 7 to mem 401
         ];
 
         let mut machine_code = Vec::new();
@@ -1010,8 +1010,8 @@ mod tests {
             instr()
                 .src(Unit::UNIT_REGISTER)
                 .si(6)
-                .dst(Unit::UNIT_MEMORY_IMMEDIATE)
-                .di(300), // Store reg 6 to mem 300
+                .dst(Unit::UNIT_MEMORY_OPERAND)
+                .doperand(300), // Store reg 6 to mem 300
         ];
 
         let mut machine_code = Vec::new();
@@ -1137,14 +1137,14 @@ mod tests {
             instr()
                 .src(Unit::UNIT_REGISTER)
                 .si(8)
-                .dst(Unit::UNIT_MEMORY_IMMEDIATE)
-                .di(800),
+                .dst(Unit::UNIT_MEMORY_OPERAND)
+                .doperand(800),
             instr().pop_to_reg(0, 9), // Pop (should be 555)
             instr()
                 .src(Unit::UNIT_REGISTER)
                 .si(9)
-                .dst(Unit::UNIT_MEMORY_IMMEDIATE)
-                .di(801),
+                .dst(Unit::UNIT_MEMORY_OPERAND)
+                .doperand(801),
         ];
 
         let mut machine_code = Vec::new();
@@ -1185,8 +1185,8 @@ mod tests {
             instr().push_immediate(0, 555), // Push 555 (original)
             // Load new value into register
             instr()
-                .src(Unit::UNIT_ABS_IMMEDIATE)
-                .si(777)
+                .src(Unit::UNIT_ABS_OPERAND)
+                .soperand(777)
                 .dst(Unit::UNIT_REGISTER)
                 .di(15),
             // Poke the new value into stack top
@@ -1196,14 +1196,14 @@ mod tests {
             instr()
                 .src(Unit::UNIT_REGISTER)
                 .si(8)
-                .dst(Unit::UNIT_MEMORY_IMMEDIATE)
-                .di(802),
+                .dst(Unit::UNIT_MEMORY_OPERAND)
+                .doperand(802),
             instr().pop_to_reg(0, 9), // Should now be 777, not 555
             instr()
                 .src(Unit::UNIT_REGISTER)
                 .si(9)
-                .dst(Unit::UNIT_MEMORY_IMMEDIATE)
-                .di(803),
+                .dst(Unit::UNIT_MEMORY_OPERAND)
+                .doperand(803),
         ];
 
         machine_code.clear();
@@ -1257,10 +1257,10 @@ mod tests {
 
         // Manually decode the first word
         let word = assembled[0];
-        let src_unit = word & 0xF;
-        let si = (word >> 4) & 0xFFF;
-        let dst_unit = (word >> 16) & 0xF;
-        let di = (word >> 20) & 0xFFF;
+        let src_unit = word & 0x1F;
+        let dst_unit = (word >> 5) & 0x1F;
+        let si = (word >> 10) & 0xFF;
+        let di = (word >> 18) & 0xFF;
 
         println!(
             "  decoded src_unit: {} (should be 3 for UNIT_REGISTER)",
@@ -1284,17 +1284,17 @@ mod tests {
 
         // Also test the register load instruction
         let reg_instr = instr()
-            .src(Unit::UNIT_ABS_IMMEDIATE)
-            .si(777)
+            .src(Unit::UNIT_ABS_OPERAND)
+            .soperand(777)
             .dst(Unit::UNIT_REGISTER)
             .di(15);
         let reg_assembled = reg_instr.assemble();
         println!("Register load assembled: {:?}", reg_assembled);
 
         let reg_word = reg_assembled[0];
-        let reg_si = (reg_word >> 4) & 0xFFF;
-        let reg_di = (reg_word >> 20) & 0xFFF;
-        println!("  reg si: {} (should be 777)", reg_si);
+        let reg_si = (reg_word >> 10) & 0xFF;
+        let reg_di = (reg_word >> 18) & 0xFF;
+        println!("  reg si: {} (operand is in next word, not in si)", reg_si);
         println!("  reg di: {} (should be 15)", reg_di);
     }
 
@@ -1331,8 +1331,8 @@ mod tests {
             instr()
                 .src(Unit::UNIT_REGISTER)
                 .si(7)
-                .dst(Unit::UNIT_MEMORY_IMMEDIATE)
-                .di(350),
+                .dst(Unit::UNIT_MEMORY_OPERAND)
+                .doperand(350),
         ];
 
         let mut machine_code = Vec::new();
@@ -1403,8 +1403,8 @@ mod tests {
             instr()
                 .src(Unit::UNIT_REGISTER)
                 .si(6)
-                .dst(Unit::UNIT_MEMORY_IMMEDIATE)
-                .di(300),
+                .dst(Unit::UNIT_MEMORY_OPERAND)
+                .doperand(300),
         ];
 
         let mut machine_code = Vec::new();
@@ -1519,164 +1519,6 @@ mod tests {
         Ok(())
     }
 
-    // --- Sub-word memory access tests ---
-
-    #[test]
-    fn test_byte_write_and_read_via_operand() -> Result<(), Box<dyn std::error::Error>> {
-        let runtime = create_runtime()?;
-        let mut tta = runtime
-            .create_model_simple::<TtaTestbench>()
-            .map_err(|e| format!("Failed to create model: {:?}", e))?;
-        let mut helper = TtaTestHelper::new();
-
-        tta.rst_i = 1;
-        tta.clk_i = 0;
-        tta.instr_ready_i = 0;
-        tta.data_ready_i = 0;
-        tta.instr_data_read_i = 0;
-        tta.data_data_read_i = 0;
-
-        // Pre-fill memory word at address 10 with 0xDEADBEEF
-        helper.set_data_memory(10, 0xDEADBEEF);
-
-        // Write byte 0xAB to byte offset 1 of word address 10
-        // Then read byte at offset 1 back to register and store to memory 20
-        let program = vec![
-            // Load 0xAB into register 0
-            instr()
-                .src(Unit::UNIT_ABS_IMMEDIATE)
-                .si(0xAB)
-                .dst(Unit::UNIT_REGISTER)
-                .di(0),
-            // Store register 0 as byte to mem_operand addr 10, byte offset 1
-            instr()
-                .src(Unit::UNIT_REGISTER)
-                .si(0)
-                .dst_mem_op(10, AccessWidth::Byte, 1),
-            // Read byte from mem_operand addr 10, byte offset 1 to register 1
-            instr()
-                .src_mem_op(10, AccessWidth::Byte, 1)
-                .dst(Unit::UNIT_REGISTER)
-                .di(1),
-            // Store register 1 (should be 0xAB) to memory 20 for verification
-            instr()
-                .src(Unit::UNIT_REGISTER)
-                .si(1)
-                .dst(Unit::UNIT_MEMORY_IMMEDIATE)
-                .di(20),
-            // Also read the full word at address 10 to verify only byte 1 changed
-            instr()
-                .src_mem_op(10, AccessWidth::Word, 0)
-                .dst(Unit::UNIT_REGISTER)
-                .di(2),
-            instr()
-                .src(Unit::UNIT_REGISTER)
-                .si(2)
-                .dst(Unit::UNIT_MEMORY_IMMEDIATE)
-                .di(21),
-        ];
-
-        let mut machine_code = Vec::new();
-        for i in program {
-            machine_code.extend(i.assemble());
-        }
-        helper.load_instructions(&machine_code, 0);
-        helper.run_until_reset_released(&mut tta)?;
-        helper.run_for_cycles(&mut tta, 200);
-
-        let byte_result = helper.get_data_memory(20);
-        let word_result = helper.get_data_memory(21);
-
-        assert_eq!(
-            byte_result, 0xAB,
-            "Byte read at offset 1 should return 0xAB (zero-extended)"
-        );
-        assert_eq!(
-            word_result, 0xDEADABEF,
-            "Full word should have only byte 1 changed from 0xBE to 0xAB"
-        );
-
-        Ok(())
-    }
-
-    #[test]
-    fn test_halfword_write_and_read_via_operand() -> Result<(), Box<dyn std::error::Error>> {
-        let runtime = create_runtime()?;
-        let mut tta = runtime
-            .create_model_simple::<TtaTestbench>()
-            .map_err(|e| format!("Failed to create model: {:?}", e))?;
-        let mut helper = TtaTestHelper::new();
-
-        tta.rst_i = 1;
-        tta.clk_i = 0;
-        tta.instr_ready_i = 0;
-        tta.data_ready_i = 0;
-        tta.instr_data_read_i = 0;
-        tta.data_data_read_i = 0;
-
-        // Pre-fill memory word at address 10 with 0xDEADBEEF
-        helper.set_data_memory(10, 0xDEADBEEF);
-
-        // Write halfword 0x1234 to upper half (byte offset 2) of word address 10
-        // Then read it back
-        let program = vec![
-            // Load 0x1234 into register 0 via 32-bit operand
-            instr()
-                .src(Unit::UNIT_ABS_OPERAND)
-                .soperand(0x1234)
-                .dst(Unit::UNIT_REGISTER)
-                .di(0),
-            // Store register 0 as halfword to addr 10, byte offset 2 (upper half)
-            instr()
-                .src(Unit::UNIT_REGISTER)
-                .si(0)
-                .dst_mem_op(10, AccessWidth::HalfWord, 2),
-            // Read halfword from addr 10, byte offset 2 to register 1
-            instr()
-                .src_mem_op(10, AccessWidth::HalfWord, 2)
-                .dst(Unit::UNIT_REGISTER)
-                .di(1),
-            // Store register 1 to memory 20
-            instr()
-                .src(Unit::UNIT_REGISTER)
-                .si(1)
-                .dst(Unit::UNIT_MEMORY_IMMEDIATE)
-                .di(20),
-            // Read full word at address 10 to check lower half preserved
-            instr()
-                .src_mem_op(10, AccessWidth::Word, 0)
-                .dst(Unit::UNIT_REGISTER)
-                .di(2),
-            instr()
-                .src(Unit::UNIT_REGISTER)
-                .si(2)
-                .dst(Unit::UNIT_MEMORY_IMMEDIATE)
-                .di(21),
-        ];
-
-        let mut machine_code = Vec::new();
-        for i in program {
-            machine_code.extend(i.assemble());
-        }
-        helper.load_instructions(&machine_code, 0);
-        helper.run_until_reset_released(&mut tta)?;
-        helper.run_for_cycles(&mut tta, 200);
-
-        let half_result = helper.get_data_memory(20);
-        let word_result = helper.get_data_memory(21);
-
-        assert_eq!(
-            half_result, 0x1234,
-            "Halfword read at offset 2 should return 0x1234 (zero-extended)"
-        );
-        assert_eq!(
-            word_result, 0x1234BEEF,
-            "Full word should have upper half changed to 0x1234, lower half preserved"
-        );
-
-        Ok(())
-    }
-
     #[test]
     fn test_byte_read_via_register_pointer() -> Result<(), Box<dyn std::error::Error>> {
         let runtime = create_runtime()?;
@@ -1776,8 +1618,8 @@ mod tests {
                 .di(100),
             // addr 4: store 333 to mem[101]
             instr()
-                .src(Unit::UNIT_ABS_IMMEDIATE)
-                .si(333)
+                .src(Unit::UNIT_ABS_OPERAND)
+                .soperand(333)
                 .dst(Unit::UNIT_MEMORY_IMMEDIATE)
                 .di(101),
         ];
@@ -1838,8 +1680,8 @@ mod tests {
                 .di(100),
             // addr 4: store 333
             instr()
-                .src(Unit::UNIT_ABS_IMMEDIATE)
-                .si(333)
+                .src(Unit::UNIT_ABS_OPERAND)
+                .soperand(333)
                 .dst(Unit::UNIT_MEMORY_IMMEDIATE)
                 .di(100),
         ];
@@ -1897,8 +1739,8 @@ mod tests {
                 .di(100),
             // addr 4: store 333
             instr()
-                .src(Unit::UNIT_ABS_IMMEDIATE)
-                .si(333)
+                .src(Unit::UNIT_ABS_OPERAND)
+                .soperand(333)
                 .dst(Unit::UNIT_MEMORY_IMMEDIATE)
                 .di(101),
         ];
@@ -1974,8 +1816,8 @@ mod tests {
                 .dst(Unit::UNIT_PC_COND),
             // addr 6: store 999 (should be skipped)
             instr()
-                .src(Unit::UNIT_ABS_IMMEDIATE)
-                .si(999)
+                .src(Unit::UNIT_ABS_OPERAND)
+                .soperand(999)
                 .dst(Unit::UNIT_MEMORY_IMMEDIATE)
                 .di(100),
             // addr 7: store 123
@@ -2028,17 +1870,17 @@ mod tests {
                 .di(0),
             // addr 2: read TAG of r0 → mem[100]
             instr()
-                .src_reg(0, RegMode::Tag)
+                .src_reg_tag(0)
                 .dst(Unit::UNIT_MEMORY_IMMEDIATE)
                 .di(100),
             // addr 3: read VALUE of r0 → mem[101]
             instr()
-                .src_reg(0, RegMode::Value)
+                .src_reg_value(0)
                 .dst(Unit::UNIT_MEMORY_IMMEDIATE)
                 .di(101),
             // addr 4: read RAW of r0 → mem[102]
             instr()
-                .src_reg(0, RegMode::Raw)
+                .src_reg(0)
                 .dst(Unit::UNIT_MEMORY_IMMEDIATE)
                 .di(102),
         ];
@@ -2091,10 +1933,10 @@ mod tests {
             instr()
                 .src(Unit::UNIT_ABS_IMMEDIATE)
                 .si(2)
-                .dst_reg(0, RegMode::Tag),
+                .dst_reg_tag(0),
             // Read raw r0 → mem[100]
             instr()
-                .src_reg(0, RegMode::Raw)
+                .src_reg(0)
                 .dst(Unit::UNIT_MEMORY_IMMEDIATE)
                 .di(100),
         ];
@@ -2139,9 +1981,9 @@ mod tests {
             instr()
                 .src(Unit::UNIT_ABS_OPERAND)
                 .soperand(0xBEEF0000)
-                .dst_reg(0, RegMode::Value),
+                .dst_reg_value(0),
             instr()
-                .src_reg(0, RegMode::Raw)
+                .src_reg(0)
                 .dst(Unit::UNIT_MEMORY_IMMEDIATE)
                 .di(100),
         ];
@@ -2433,19 +2275,19 @@ mod tests {
         tta.data_data_read_i = 0;
 
         // The jump is a 2-word instruction. While execute processes it,
-        // the sequencer may prefetch addr 2 (the wrong-path instruction).
+        // the sequencer may prefetch the wrong-path instruction.
         // The branch must discard that prefetch.
         //
-        // addr 0-1: jump to addr 3
-        // addr 2:   store 0xBAD → mem[400] (wrong path — distinct address)
-        // addr 3:   store 0x600D → mem[100] (branch target)
+        // addr 0-1: jump to addr 5
+        // addr 2-4: store 0xBAD → mem[200] (wrong path, 3-word)
+        // addr 5-6: store 0x600D → mem[100] (branch target, 2-word)
         let program = vec![
             instr()
-                .src(Unit::UNIT_ABS_OPERAND).soperand(3)
+                .src(Unit::UNIT_ABS_OPERAND).soperand(5)
                 .dst(Unit::UNIT_PC),
             instr()
-                .src(Unit::UNIT_ABS_IMMEDIATE).si(0xBAD)
-                .dst(Unit::UNIT_MEMORY_IMMEDIATE).di(400),
+                .src(Unit::UNIT_ABS_OPERAND).soperand(0xBAD)
+                .dst(Unit::UNIT_MEMORY_OPERAND).doperand(200),
             instr()
                 .src(Unit::UNIT_ABS_OPERAND).soperand(0x600D)
                 .dst(Unit::UNIT_MEMORY_IMMEDIATE).di(100),
@@ -2461,7 +2303,7 @@ mod tests {
 
         assert_eq!(helper.get_data_memory(100), 0x600D,
             "Branch target should execute");
-        assert_eq!(helper.get_data_memory(400), 0,
+        assert_eq!(helper.get_data_memory(200), 0,
             "Wrong-path instruction must not execute (prefetch should be flushed)");
 
         Ok(())
@@ -2543,7 +2385,7 @@ mod tests {
             instr().src(Unit::UNIT_REGISTER).si(1)
                    .dst(Unit::UNIT_MEMORY_IMMEDIATE).di(101),
             // 2-word: mem_operand → reg (source operand)
-            instr().src_mem_op(50, AccessWidth::Word, 0)
+            instr().src_mem_op(50)
                    .dst(Unit::UNIT_REGISTER).di(2),
             // 1-word: reg → mem
             instr().src(Unit::UNIT_REGISTER).si(2)
@@ -2592,11 +2434,11 @@ mod tests {
         let program = vec![
             instr().src(Unit::UNIT_ABS_OPERAND).soperand(6).dst(Unit::UNIT_PC),
             // These 1-word instructions may be fetched into both queue slots
-            instr().src(Unit::UNIT_ABS_IMMEDIATE).si(0xBA1).dst(Unit::UNIT_MEMORY_IMMEDIATE).di(400),
-            instr().src(Unit::UNIT_ABS_IMMEDIATE).si(0xBA2).dst(Unit::UNIT_MEMORY_IMMEDIATE).di(401),
-            instr().src(Unit::UNIT_ABS_IMMEDIATE).si(0xBA3).dst(Unit::UNIT_MEMORY_IMMEDIATE).di(402),
+            instr().src(Unit::UNIT_ABS_OPERAND).soperand(0xBA1).dst(Unit::UNIT_MEMORY_OPERAND).doperand(400),
+            instr().src(Unit::UNIT_ABS_OPERAND).soperand(0xBA2).dst(Unit::UNIT_MEMORY_OPERAND).doperand(401),
+            instr().src(Unit::UNIT_ABS_OPERAND).soperand(0xBA3).dst(Unit::UNIT_MEMORY_OPERAND).doperand(402),
             instr().src(Unit::UNIT_ABS_IMMEDIATE).si(0).dst(Unit::UNIT_REGISTER).di(0),
-            instr().src(Unit::UNIT_ABS_IMMEDIATE).si(0x999).dst(Unit::UNIT_MEMORY_IMMEDIATE).di(100),
+            instr().src(Unit::UNIT_ABS_OPERAND).soperand(0x999).dst(Unit::UNIT_MEMORY_IMMEDIATE).di(100),
         ];
 
         let mut machine_code = Vec::new();
@@ -2736,9 +2578,9 @@ mod tests {
         let program = vec![
             instr().src(Unit::UNIT_ABS_IMMEDIATE).si(1).dst(Unit::UNIT_COND),
             instr().src(Unit::UNIT_ABS_OPERAND).soperand(5).dst(Unit::UNIT_PC_COND),
-            instr().src(Unit::UNIT_ABS_IMMEDIATE).si(0xBAD).dst(Unit::UNIT_MEMORY_IMMEDIATE).di(400),
+            instr().src(Unit::UNIT_ABS_OPERAND).soperand(0xBAD).dst(Unit::UNIT_MEMORY_OPERAND).doperand(400),
             instr().src(Unit::UNIT_ABS_IMMEDIATE).si(0).dst(Unit::UNIT_REGISTER).di(0),
-            instr().src(Unit::UNIT_ABS_IMMEDIATE).si(0x999).dst(Unit::UNIT_MEMORY_IMMEDIATE).di(100),
+            instr().src(Unit::UNIT_ABS_OPERAND).soperand(0x999).dst(Unit::UNIT_MEMORY_IMMEDIATE).di(100),
         ];
 
         let mut machine_code = Vec::new();
@@ -2774,22 +2616,22 @@ mod tests {
         tta.instr_data_read_i = 0;
         tta.data_data_read_i = 0;
 
-        // addr 0-1: jump to addr 4 (first branch)
-        // addr 2: store 0xBAD1 → mem[400] (skipped)
-        // addr 3: nop
-        // addr 4-5: jump to addr 8 (second branch, immediately at target of first)
-        // addr 6: store 0xBAD2 → mem[401] (skipped)
-        // addr 7: nop
-        // addr 8: store 0xACE → mem[100]
-        // addr 9: PC → mem[101]
+        // addr 0-1:  jump to addr 6 (first branch, 2 words)
+        // addr 2-4:  store 0xBA1 → mem[200] (skipped, 3 words)
+        // addr 5:    nop (1 word)
+        // addr 6-7:  jump to addr 12 (second branch, 2 words)
+        // addr 8-10: store 0xBA2 → mem[201] (skipped, 3 words)
+        // addr 11:   nop (1 word)
+        // addr 12-13: store 0xACE → mem[100] (2 words)
+        // addr 14:   PC → mem[101] (1 word, PC = 15)
         let program = vec![
-            instr().src(Unit::UNIT_ABS_OPERAND).soperand(4).dst(Unit::UNIT_PC),
-            instr().src(Unit::UNIT_ABS_IMMEDIATE).si(0xBA1).dst(Unit::UNIT_MEMORY_IMMEDIATE).di(400),
+            instr().src(Unit::UNIT_ABS_OPERAND).soperand(6).dst(Unit::UNIT_PC),
+            instr().src(Unit::UNIT_ABS_OPERAND).soperand(0xBA1).dst(Unit::UNIT_MEMORY_OPERAND).doperand(200),
             instr().src(Unit::UNIT_ABS_IMMEDIATE).si(0).dst(Unit::UNIT_REGISTER).di(0),
-            instr().src(Unit::UNIT_ABS_OPERAND).soperand(8).dst(Unit::UNIT_PC),
-            instr().src(Unit::UNIT_ABS_IMMEDIATE).si(0xBA2).dst(Unit::UNIT_MEMORY_IMMEDIATE).di(401),
+            instr().src(Unit::UNIT_ABS_OPERAND).soperand(12).dst(Unit::UNIT_PC),
+            instr().src(Unit::UNIT_ABS_OPERAND).soperand(0xBA2).dst(Unit::UNIT_MEMORY_OPERAND).doperand(201),
             instr().src(Unit::UNIT_ABS_IMMEDIATE).si(0).dst(Unit::UNIT_REGISTER).di(0),
-            instr().src(Unit::UNIT_ABS_IMMEDIATE).si(0xACE).dst(Unit::UNIT_MEMORY_IMMEDIATE).di(100),
+            instr().src(Unit::UNIT_ABS_OPERAND).soperand(0xACE).dst(Unit::UNIT_MEMORY_IMMEDIATE).di(100),
             instr().src(Unit::UNIT_PC).dst(Unit::UNIT_MEMORY_IMMEDIATE).di(101),
         ];
 
@@ -2802,9 +2644,9 @@ mod tests {
         helper.run_for_cycles(&mut tta, 300);
 
         assert_eq!(helper.get_data_memory(100), 0xACE);
-        assert_eq!(helper.get_data_memory(101), 10, "PC at addr 9 should be 10");
-        assert_eq!(helper.get_data_memory(400), 0, "First branch wrong-path must not execute");
-        assert_eq!(helper.get_data_memory(401), 0, "Second branch wrong-path must not execute");
+        assert_eq!(helper.get_data_memory(101), 15, "PC at addr 14 should be 15");
+        assert_eq!(helper.get_data_memory(200), 0, "First branch wrong-path must not execute");
+        assert_eq!(helper.get_data_memory(201), 0, "Second branch wrong-path must not execute");
 
         Ok(())
     }
@@ -2850,161 +2692,6 @@ mod tests {
         assert_eq!(helper.get_data_memory(100), 1, "PC at addr 0 should be 1");
         assert_eq!(helper.get_data_memory(101), 5, "PC at addr 4 (after not-taken branch) should be 5");
         assert_eq!(helper.get_data_memory(102), 6, "PC at addr 5 should be 6");
-
-        Ok(())
-    }
-
-    // --- Tagged stack access tests ---
-
-    #[test]
-    fn test_stack_pop_tag_and_value_modes() -> Result<(), Box<dyn std::error::Error>> {
-        let runtime = create_runtime()?;
-        let mut tta = runtime
-            .create_model_simple::<TtaTestbench>()
-            .map_err(|e| format!("Failed to create model: {:?}", e))?;
-        let mut helper = TtaTestHelper::new();
-
-        tta.rst_i = 1;
-        tta.clk_i = 0;
-        tta.instr_ready_i = 0;
-        tta.data_ready_i = 0;
-        tta.instr_data_read_i = 0;
-        tta.data_data_read_i = 0;
-
-        // Push a tagged value 0xDEADBEE1 (tag=1, payload=0xDEADBEE0)
-        // Then pop three times in different modes.
-        let program = vec![
-            // Push the tagged value three times (need three copies to pop three times)
-            instr().push_immediate(0, 0xDEADBEE1),
-            instr().push_immediate(0, 0xDEADBEE1),
-            instr().push_immediate(0, 0xDEADBEE1),
-            // Pop RAW → mem[100]
-            instr()
-                .src_pop(0, RegMode::Raw)
-                .dst(Unit::UNIT_MEMORY_IMMEDIATE).di(100),
-            // Pop VALUE → mem[101]
-            instr()
-                .src_pop(0, RegMode::Value)
-                .dst(Unit::UNIT_MEMORY_IMMEDIATE).di(101),
-            // Pop TAG → mem[102]
-            instr()
-                .src_pop(0, RegMode::Tag)
-                .dst(Unit::UNIT_MEMORY_IMMEDIATE).di(102),
-        ];
-
-        let mut machine_code = Vec::new();
-        for i in &program {
-            machine_code.extend(i.assemble());
-        }
-        helper.load_instructions(&machine_code, 0);
-        helper.run_until_reset_released(&mut tta)?;
-        helper.run_for_cycles(&mut tta, 300);
-
-        assert_eq!(helper.get_data_memory(100), 0xDEADBEE1, "RAW pop should return full tagged word");
-        assert_eq!(helper.get_data_memory(101), 0xDEADBEE0, "VALUE pop should zero tag bits");
-        assert_eq!(helper.get_data_memory(102), 1, "TAG pop should return only tag bits");
-
-        Ok(())
-    }
-
-    #[test]
-    fn test_stack_peek_tag_mode() -> Result<(), Box<dyn std::error::Error>> {
-        let runtime = create_runtime()?;
-        let mut tta = runtime
-            .create_model_simple::<TtaTestbench>()
-            .map_err(|e| format!("Failed to create model: {:?}", e))?;
-        let mut helper = TtaTestHelper::new();
-
-        tta.rst_i = 1;
-        tta.clk_i = 0;
-        tta.instr_ready_i = 0;
-        tta.data_ready_i = 0;
-        tta.instr_data_read_i = 0;
-        tta.data_data_read_i = 0;
-
-        // Push two tagged values with different tags, then peek at each
-        // in TAG mode for type dispatch.
-        let program = vec![
-            instr().push_immediate(0, 0x00000100 | 1), // tag=1 (cons)
-            instr().push_immediate(0, 0x00000200 | 2), // tag=2 (symbol)
-            // Peek offset 0 (top = symbol) TAG → mem[100]
-            instr()
-                .src_peek(0, 0, RegMode::Tag)
-                .dst(Unit::UNIT_MEMORY_IMMEDIATE).di(100),
-            // Peek offset 1 (second = cons) TAG → mem[101]
-            instr()
-                .src_peek(0, 1, RegMode::Tag)
-                .dst(Unit::UNIT_MEMORY_IMMEDIATE).di(101),
-            // Peek offset 0 VALUE → mem[102]
-            instr()
-                .src_peek(0, 0, RegMode::Value)
-                .dst(Unit::UNIT_MEMORY_IMMEDIATE).di(102),
-        ];
-
-        let mut machine_code = Vec::new();
-        for i in &program {
-            machine_code.extend(i.assemble());
-        }
-        helper.load_instructions(&machine_code, 0);
-        helper.run_until_reset_released(&mut tta)?;
-        helper.run_for_cycles(&mut tta, 300);
-
-        assert_eq!(helper.get_data_memory(100), 2, "Top of stack tag should be 2 (symbol)");
-        assert_eq!(helper.get_data_memory(101), 1, "Second entry tag should be 1 (cons)");
-        assert_eq!(helper.get_data_memory(102), 0x200, "Top of stack value should be 0x200 (tag stripped)");
-
-        Ok(())
-    }
-
-    #[test]
-    fn test_stack_pop_tag_to_cond_for_dispatch() -> Result<(), Box<dyn std::error::Error>> {
-        // Lisp-style pattern: pop, check tag, branch based on type.
-        let runtime = create_runtime()?;
-        let mut tta = runtime
-            .create_model_simple::<TtaTestbench>()
-            .map_err(|e| format!("Failed to create model: {:?}", e))?;
-        let mut helper = TtaTestHelper::new();
-
-        tta.rst_i = 1;
-        tta.clk_i = 0;
-        tta.instr_ready_i = 0;
-        tta.data_ready_i = 0;
-        tta.instr_data_read_i = 0;
-        tta.data_data_read_i = 0;
-
-        // Push a tagged cons pointer (tag=1), then peek its tag directly
-        // into the condition register for type dispatch.
-        // addr 0-1: push_immediate (2 words)
-        // addr 2:   peek TAG → COND (1 word)
-        // addr 3-4: conditional branch to addr 6 (2 words)
-        // addr 5:   store 0xBAD → mem[400] (should be skipped)
-        // addr 6:   store 0x999 → mem[100] (branch target)
-        let program = vec![
-            instr().push_immediate(0, 0xCAFE0001), // tag=1
-            instr()
-                .src_peek(0, 0, RegMode::Tag)
-                .dst(Unit::UNIT_COND),
-            instr()
-                .src(Unit::UNIT_ABS_OPERAND).soperand(6)
-                .dst(Unit::UNIT_PC_COND),
-            instr()
-                .src(Unit::UNIT_ABS_IMMEDIATE).si(0xBAD)
-                .dst(Unit::UNIT_MEMORY_IMMEDIATE).di(400),
-            instr()
-                .src(Unit::UNIT_ABS_IMMEDIATE).si(0x999)
-                .dst(Unit::UNIT_MEMORY_IMMEDIATE).di(100),
-        ];
-
-        let mut machine_code = Vec::new();
-        for i in &program {
-            machine_code.extend(i.assemble());
-        }
-        helper.load_instructions(&machine_code, 0);
-        helper.run_until_reset_released(&mut tta)?;
-        helper.run_for_cycles(&mut tta, 300);
-
-        assert_eq!(helper.get_data_memory(100), 0x999, "Branch taken: tag was nonzero");
-        assert_eq!(helper.get_data_memory(400), 0, "Skipped instruction must not execute");
 
         Ok(())
     }
@@ -3057,7 +2744,7 @@ mod tests {
             // 14-15: conditional branch not-taken (2-word)
             instr().src(Unit::UNIT_ABS_OPERAND).soperand(99).dst(Unit::UNIT_PC_COND),
             // 16: reg TAG → reg (1-word, fused)
-            instr().src_reg(0, RegMode::Tag).dst(Unit::UNIT_REGISTER).di(6),
+            instr().src_reg_tag(0).dst(Unit::UNIT_REGISTER).di(6),
             // 17: reg DEREF → reg (1-word, multi-cycle — bus read via tagged ptr)
             // (need a valid tagged pointer first — use reg 0 which has 42)
             // Actually 42 has tag=2, payload=40. mem[40] might be 0. That's fine for timing.
@@ -3128,18 +2815,18 @@ mod tests {
                 .src(Unit::UNIT_ABS_IMMEDIATE).si(200)
                 .dst(Unit::UNIT_WRITE_BARRIER),
             instr()
-                .src(Unit::UNIT_ABS_IMMEDIATE).si(300)
+                .src(Unit::UNIT_ABS_OPERAND).soperand(300)
                 .dst(Unit::UNIT_WRITE_BARRIER),
             // Pop them back to memory for verification (FIFO order)
             instr()
                 .src(Unit::UNIT_WRITE_BARRIER)
-                .dst(Unit::UNIT_MEMORY_IMMEDIATE).di(400),
+                .dst(Unit::UNIT_MEMORY_OPERAND).doperand(400),
             instr()
                 .src(Unit::UNIT_WRITE_BARRIER)
-                .dst(Unit::UNIT_MEMORY_IMMEDIATE).di(401),
+                .dst(Unit::UNIT_MEMORY_OPERAND).doperand(401),
             instr()
                 .src(Unit::UNIT_WRITE_BARRIER)
-                .dst(Unit::UNIT_MEMORY_IMMEDIATE).di(402),
+                .dst(Unit::UNIT_MEMORY_OPERAND).doperand(402),
         ];
 
         let mut machine_code = Vec::new();
@@ -3200,14 +2887,14 @@ mod tests {
             // GC: store dirty address to mem[500] for verification
             instr()
                 .src(Unit::UNIT_REGISTER).si(0)
-                .dst(Unit::UNIT_MEMORY_IMMEDIATE).di(500),
+                .dst(Unit::UNIT_MEMORY_OPERAND).doperand(500),
             // GC: pop second dirty address
             instr()
                 .src(Unit::UNIT_WRITE_BARRIER)
                 .dst(Unit::UNIT_REGISTER).di(1),
             instr()
                 .src(Unit::UNIT_REGISTER).si(1)
-                .dst(Unit::UNIT_MEMORY_IMMEDIATE).di(501),
+                .dst(Unit::UNIT_MEMORY_OPERAND).doperand(501),
         ];
 
         let mut machine_code = Vec::new();

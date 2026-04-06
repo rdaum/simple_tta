@@ -2,7 +2,7 @@ use marlin::verilator::VerilatorRuntime;
 use proptest::prelude::*;
 use std::collections::HashMap;
 
-use sideeffect_sim::{create_tta_runtime, instr, AccessWidth, ALUOp, RegMode, TtaTestbench, Unit};
+use sideeffect_sim::{create_tta_runtime, instr, ALUOp, TtaTestbench, Unit};
 
 fn create_runtime() -> Result<VerilatorRuntime, Box<dyn std::error::Error>> {
     Ok(create_tta_runtime()?)
@@ -121,13 +121,13 @@ impl TtaPropertyHelper {
 // Property test generators
 
 /// Generate a valid register number (0-31)
-fn reg_num() -> impl Strategy<Value = u16> {
-    0u16..32
+fn reg_num() -> impl Strategy<Value = u8> {
+    0u8..32
 }
 
-/// Generate a valid 12-bit immediate value
-fn immediate_12bit() -> impl Strategy<Value = u16> {
-    0u16..(1 << 12)
+/// Generate a valid 8-bit immediate value
+fn immediate_8bit() -> impl Strategy<Value = u8> {
+    0u8..=255
 }
 
 /// Generate a 32-bit memory address
@@ -196,17 +196,16 @@ mod property_tests {
             tta.data_data_read_i = 0;
 
             // Program: write value to memory, then read it back
+            // Use operand form for values/addresses that may exceed 8 bits
             let program = vec![
                 instr()
-                    .src(Unit::UNIT_ABS_IMMEDIATE)
-                    .si((value & 0xFFF) as u16)  // Lower 12 bits
-                    .dst(Unit::UNIT_MEMORY_IMMEDIATE)
-                    .di((addr & 0xFFF) as u16),  // Address fits in 12 bits
+                    .src(Unit::UNIT_ABS_OPERAND)
+                    .soperand(value & 0xFF)
+                    .dst(Unit::UNIT_MEMORY_OPERAND)
+                    .doperand(addr & 0xFF),
                 instr()
-                    .src(Unit::UNIT_MEMORY_IMMEDIATE)
-                    .si((addr & 0xFFF) as u16)
-                    .dst(Unit::UNIT_MEMORY_IMMEDIATE)
-                    .di(((addr + 1) & 0xFFF) as u16),  // Read to different address
+                    .src_mem_op(addr & 0xFF)
+                    .dst_mem_op((addr + 1) & 0xFF),
             ];
 
             let mut machine_code = Vec::new();
@@ -220,10 +219,10 @@ mod property_tests {
             // Run the program
             helper.run_for_cycles(&mut tta, 50);
 
-            // Verify memory consistency (at least for the lower 12 bits that we can address)
-            let written_value = value & 0xFFF;
-            let read_value = helper.get_data_memory((addr + 1) & 0xFFF);
-            prop_assert_eq!(read_value & 0xFFF, written_value);
+            // Verify memory consistency (at least for the lower 8 bits that we can address)
+            let written_value = value & 0xFF;
+            let read_value = helper.get_data_memory((addr + 1) & 0xFF);
+            prop_assert_eq!(read_value & 0xFF, written_value);
         }
 
         /// Property: Register operations are idempotent when src == dst
@@ -245,10 +244,10 @@ mod property_tests {
 
             // Program: move register to itself (should be idempotent)
             let program = vec![
-                // First load a value into the register
+                // First load a value into the register (42 fits in 8 bits)
                 instr()
                     .src(Unit::UNIT_ABS_IMMEDIATE)
-                    .si(666)
+                    .si(42)
                     .dst(Unit::UNIT_REGISTER)
                     .di(reg),
                 // Then move register to itself
@@ -277,14 +276,14 @@ mod property_tests {
             helper.run_for_cycles(&mut tta, 50);
 
             // Verify the register still contains the original value
-            prop_assert_eq!(helper.get_data_memory(100), 666);
+            prop_assert_eq!(helper.get_data_memory(100), 42);
         }
 
         /// Property: ALU addition is commutative
         #[test]
         fn prop_alu_addition_commutative(
-            a in immediate_12bit(),
-            b in immediate_12bit()
+            a in immediate_8bit(),
+            b in immediate_8bit()
         ) {
             // Test a + b == b + a
             let runtime1 = create_runtime().unwrap();
@@ -309,7 +308,7 @@ mod property_tests {
             let program1 = vec![
                 instr().src(Unit::UNIT_ABS_IMMEDIATE).si(a).dst(Unit::UNIT_ALU_LEFT).di(0),
                 instr().src(Unit::UNIT_ABS_IMMEDIATE).si(b).dst(Unit::UNIT_ALU_RIGHT).di(0),
-                instr().src(Unit::UNIT_ABS_IMMEDIATE).si(ALUOp::ALU_ADD as u16).dst(Unit::UNIT_ALU_OPERATOR).di(0),
+                instr().src(Unit::UNIT_ABS_IMMEDIATE).si(ALUOp::ALU_ADD as u8).dst(Unit::UNIT_ALU_OPERATOR).di(0),
                 instr().src(Unit::UNIT_ALU_RESULT).si(0).dst(Unit::UNIT_MEMORY_IMMEDIATE).di(100),
             ];
 
@@ -317,7 +316,7 @@ mod property_tests {
             let program2 = vec![
                 instr().src(Unit::UNIT_ABS_IMMEDIATE).si(b).dst(Unit::UNIT_ALU_LEFT).di(0),
                 instr().src(Unit::UNIT_ABS_IMMEDIATE).si(a).dst(Unit::UNIT_ALU_RIGHT).di(0),
-                instr().src(Unit::UNIT_ABS_IMMEDIATE).si(ALUOp::ALU_ADD as u16).dst(Unit::UNIT_ALU_OPERATOR).di(0),
+                instr().src(Unit::UNIT_ABS_IMMEDIATE).si(ALUOp::ALU_ADD as u8).dst(Unit::UNIT_ALU_OPERATOR).di(0),
                 instr().src(Unit::UNIT_ALU_RESULT).si(0).dst(Unit::UNIT_MEMORY_IMMEDIATE).di(100),
             ];
 
@@ -358,7 +357,7 @@ mod property_tests {
                 Just(Unit::UNIT_REGISTER),
                 Just(Unit::UNIT_MEMORY_IMMEDIATE),
             ],
-            immediate in immediate_12bit()
+            immediate in immediate_8bit()
         ) {
             let runtime = create_runtime().unwrap();
             let mut tta = runtime.create_model_simple::<TtaTestbench>().unwrap();
@@ -509,14 +508,14 @@ mod property_tests {
             let program = vec![
                 instr()
                     .src(Unit::UNIT_ABS_IMMEDIATE)
-                    .si(0xAAAA & 0xFFF)
+                    .si((0xAA & 0xFF) as u8)
                     .dst(Unit::UNIT_MEMORY_IMMEDIATE)
-                    .di((addr1 & 0xFFF) as u16),
+                    .di((addr1 & 0xFF) as u8),
                 instr()
                     .src(Unit::UNIT_MEMORY_IMMEDIATE)
-                    .si((addr1 & 0xFFF) as u16)
+                    .si((addr1 & 0xFF) as u8)
                     .dst(Unit::UNIT_MEMORY_IMMEDIATE)
-                    .di((addr2 & 0xFFF) as u16),
+                    .di((addr2 & 0xFF) as u8),
             ];
 
             let mut machine_code = Vec::new();
@@ -577,14 +576,14 @@ mod property_tests {
             let program = vec![
                 instr()
                     .src(Unit::UNIT_ABS_IMMEDIATE)
-                    .si((value & 0xFFF) as u16)
+                    .si((value & 0xFF) as u8)
                     .dst(Unit::UNIT_MEMORY_IMMEDIATE)
-                    .di((addr & 0xFFF) as u16),
+                    .di((addr & 0xFF) as u8),
                 instr()
                     .src(Unit::UNIT_MEMORY_IMMEDIATE)
-                    .si((addr & 0xFFF) as u16)
+                    .si((addr & 0xFF) as u8)
                     .dst(Unit::UNIT_MEMORY_IMMEDIATE)
-                    .di(((addr + 1) & 0xFFF) as u16),
+                    .di(((addr + 1) & 0xFF) as u8),
             ];
 
             let mut machine_code = Vec::new();
@@ -608,7 +607,7 @@ mod property_tests {
                 let addr_bus = tta.data_addr_o;
 
                 // Track write transaction
-                if data_valid != 0 && wstrb != 0 && addr_bus == (addr & 0xFFF) {
+                if data_valid != 0 && wstrb != 0 && addr_bus == (addr & 0xFF) {
                     write_started = true;
                     if data_ready != 0 {
                         write_completed = true;
@@ -616,15 +615,15 @@ mod property_tests {
                 }
 
                 // Track read transaction
-                if data_valid != 0 && wstrb == 0 && addr_bus == (addr & 0xFFF) && write_completed {
+                if data_valid != 0 && wstrb == 0 && addr_bus == (addr & 0xFF) && write_completed {
                     read_started = true;
                 }
 
                 // Check for intermediate states during write
                 if write_started && !write_completed {
                     // Property: Memory should not see partial writes
-                    let current_value = helper.get_data_memory(addr & 0xFFF);
-                    if current_value != 0 && current_value != (value & 0xFFF) {
+                    let current_value = helper.get_data_memory(addr & 0xFF);
+                    if current_value != 0 && current_value != (value & 0xFF) {
                         intermediate_value_seen = true;
                     }
                 }
@@ -636,17 +635,17 @@ mod property_tests {
             prop_assert!(!intermediate_value_seen, "Memory transactions should be atomic");
 
             // Property: Final result should be correct
-            let final_value = helper.get_data_memory((addr + 1) & 0xFFF);
+            let final_value = helper.get_data_memory((addr + 1) & 0xFF);
             if write_completed && read_started {
-                prop_assert_eq!(final_value & 0xFFF, value & 0xFFF, "Atomic transaction should preserve data");
+                prop_assert_eq!(final_value & 0xFF, value & 0xFF, "Atomic transaction should preserve data");
             }
         }
 
         /// Property: ALU subtraction is anti-commutative (a - b = -(b - a))
         #[test]
         fn prop_alu_subtraction_anti_commutative(
-            a in immediate_12bit(),
-            b in immediate_12bit()
+            a in immediate_8bit(),
+            b in immediate_8bit()
         ) {
             // Test a - b == -(b - a)
             let runtime1 = create_runtime().unwrap();
@@ -671,7 +670,7 @@ mod property_tests {
             let program1 = vec![
                 instr().src(Unit::UNIT_ABS_IMMEDIATE).si(a).dst(Unit::UNIT_ALU_LEFT).di(0),
                 instr().src(Unit::UNIT_ABS_IMMEDIATE).si(b).dst(Unit::UNIT_ALU_RIGHT).di(0),
-                instr().src(Unit::UNIT_ABS_IMMEDIATE).si(ALUOp::ALU_SUB as u16).dst(Unit::UNIT_ALU_OPERATOR).di(0),
+                instr().src(Unit::UNIT_ABS_IMMEDIATE).si(ALUOp::ALU_SUB as u8).dst(Unit::UNIT_ALU_OPERATOR).di(0),
                 instr().src(Unit::UNIT_ALU_RESULT).si(0).dst(Unit::UNIT_MEMORY_IMMEDIATE).di(100),
             ];
 
@@ -679,7 +678,7 @@ mod property_tests {
             let program2 = vec![
                 instr().src(Unit::UNIT_ABS_IMMEDIATE).si(b).dst(Unit::UNIT_ALU_LEFT).di(0),
                 instr().src(Unit::UNIT_ABS_IMMEDIATE).si(a).dst(Unit::UNIT_ALU_RIGHT).di(0),
-                instr().src(Unit::UNIT_ABS_IMMEDIATE).si(ALUOp::ALU_SUB as u16).dst(Unit::UNIT_ALU_OPERATOR).di(0),
+                instr().src(Unit::UNIT_ABS_IMMEDIATE).si(ALUOp::ALU_SUB as u8).dst(Unit::UNIT_ALU_OPERATOR).di(0),
                 instr().src(Unit::UNIT_ALU_RESULT).si(0).dst(Unit::UNIT_MEMORY_IMMEDIATE).di(100),
             ];
 
@@ -706,18 +705,16 @@ mod property_tests {
             let result1 = helper1.get_data_memory(100) as i32;
             let result2 = helper2.get_data_memory(100) as i32;
 
-            // For small values, check exact anti-commutativity
-            if a < 1000 && b < 1000 {
-                prop_assert_eq!(result1, -result2, "a - b should equal -(b - a)");
-            }
+            // Check exact anti-commutativity
+            prop_assert_eq!(result1, -result2, "a - b should equal -(b - a)");
         }
 
         /// Property: ALU multiplication is commutative and associative
         #[test]
         fn prop_alu_multiplication_properties(
-            a in 0u16..100, // Keep small to avoid overflow
-            b in 0u16..100,
-            _c in 0u16..100
+            a in 0u8..100, // Keep small to avoid overflow
+            b in 0u8..100,
+            _c in 0u8..100
         ) {
             // Test commutativity: a * b == b * a
             let runtime1 = create_runtime().unwrap();
@@ -742,7 +739,7 @@ mod property_tests {
             let program1 = vec![
                 instr().src(Unit::UNIT_ABS_IMMEDIATE).si(a).dst(Unit::UNIT_ALU_LEFT).di(0),
                 instr().src(Unit::UNIT_ABS_IMMEDIATE).si(b).dst(Unit::UNIT_ALU_RIGHT).di(0),
-                instr().src(Unit::UNIT_ABS_IMMEDIATE).si(ALUOp::ALU_MUL as u16).dst(Unit::UNIT_ALU_OPERATOR).di(0),
+                instr().src(Unit::UNIT_ABS_IMMEDIATE).si(ALUOp::ALU_MUL as u8).dst(Unit::UNIT_ALU_OPERATOR).di(0),
                 instr().src(Unit::UNIT_ALU_RESULT).si(0).dst(Unit::UNIT_MEMORY_IMMEDIATE).di(100),
             ];
 
@@ -750,7 +747,7 @@ mod property_tests {
             let program2 = vec![
                 instr().src(Unit::UNIT_ABS_IMMEDIATE).si(b).dst(Unit::UNIT_ALU_LEFT).di(0),
                 instr().src(Unit::UNIT_ABS_IMMEDIATE).si(a).dst(Unit::UNIT_ALU_RIGHT).di(0),
-                instr().src(Unit::UNIT_ABS_IMMEDIATE).si(ALUOp::ALU_MUL as u16).dst(Unit::UNIT_ALU_OPERATOR).di(0),
+                instr().src(Unit::UNIT_ABS_IMMEDIATE).si(ALUOp::ALU_MUL as u8).dst(Unit::UNIT_ALU_OPERATOR).di(0),
                 instr().src(Unit::UNIT_ALU_RESULT).si(0).dst(Unit::UNIT_MEMORY_IMMEDIATE).di(100),
             ];
 
@@ -782,11 +779,11 @@ mod property_tests {
         /// Property: ALU logical operations have correct identities
         #[test]
         fn prop_alu_logical_identities(
-            value in immediate_12bit(),
+            value in immediate_8bit(),
             op in prop_oneof![
-                Just(ALUOp::ALU_AND as u16),
-                Just(ALUOp::ALU_OR as u16),
-                Just(ALUOp::ALU_XOR as u16)
+                Just(ALUOp::ALU_AND as u8),
+                Just(ALUOp::ALU_OR as u8),
+                Just(ALUOp::ALU_XOR as u8)
             ]
         ) {
             let runtime = create_runtime().unwrap();
@@ -802,9 +799,9 @@ mod property_tests {
             tta.data_data_read_i = 0;
 
             let (identity_value, expected_result) = match op {
-                op if op == ALUOp::ALU_AND as u16 => (0xFFF, value & 0xFFF),  // AND with all 1s = value & mask
-                op if op == ALUOp::ALU_OR as u16 => (0, value),              // OR with 0 = value
-                op if op == ALUOp::ALU_XOR as u16 => (0, value),              // XOR with 0 = value
+                op if op == ALUOp::ALU_AND as u8 => (0xFF_u8, value & 0xFF),  // AND with all 1s = value
+                op if op == ALUOp::ALU_OR as u8 => (0_u8, value),             // OR with 0 = value
+                op if op == ALUOp::ALU_XOR as u8 => (0_u8, value),            // XOR with 0 = value
                 _ => unreachable!(),
             };
 
@@ -839,8 +836,8 @@ mod property_tests {
         /// Property: ALU comparison operations are consistent
         #[test]
         fn prop_alu_comparison_consistency(
-            a in immediate_12bit(),
-            b in immediate_12bit()
+            a in immediate_8bit(),
+            b in immediate_8bit()
         ) {
             let runtime = create_runtime().unwrap();
             let mut tta = runtime.create_model_simple::<TtaTestbench>().unwrap();
@@ -856,9 +853,9 @@ mod property_tests {
 
             // Test a < b, a == b, and a > b
             let operations = vec![
-                (ALUOp::ALU_LT as u16, "LT"),
-                (ALUOp::ALU_EQL as u16, "EQL"),
-                (ALUOp::ALU_GT as u16, "GT")
+                (ALUOp::ALU_LT as u8, "LT"),
+                (ALUOp::ALU_EQL as u8, "EQL"),
+                (ALUOp::ALU_GT as u8, "GT")
             ];
 
             let mut results = Vec::new();
@@ -918,8 +915,8 @@ mod property_tests {
         /// Property: ALU shift operations are consistent
         #[test]
         fn prop_alu_shift_operations(
-            value in 0u16..1000, // Keep reasonable to avoid overflow
-            shift_amount in 0u16..8 // Reasonable shift amounts
+            value in 0u8..=255, // Keep reasonable to avoid overflow
+            shift_amount in 0u8..8 // Reasonable shift amounts
         ) {
             let runtime = create_runtime().unwrap();
             let mut tta = runtime.create_model_simple::<TtaTestbench>().unwrap();
@@ -937,7 +934,7 @@ mod property_tests {
             let program = vec![
                 instr().src(Unit::UNIT_ABS_IMMEDIATE).si(value).dst(Unit::UNIT_ALU_LEFT).di(0),
                 instr().src(Unit::UNIT_ABS_IMMEDIATE).si(shift_amount).dst(Unit::UNIT_ALU_RIGHT).di(0),
-                instr().src(Unit::UNIT_ABS_IMMEDIATE).si(ALUOp::ALU_SL as u16).dst(Unit::UNIT_ALU_OPERATOR).di(0),
+                instr().src(Unit::UNIT_ABS_IMMEDIATE).si(ALUOp::ALU_SL as u8).dst(Unit::UNIT_ALU_OPERATOR).di(0),
                 instr().src(Unit::UNIT_ALU_RESULT).si(0).dst(Unit::UNIT_MEMORY_IMMEDIATE).di(100),
             ];
 
@@ -960,8 +957,8 @@ mod property_tests {
         /// Property: ALU division and modulo relationship
         #[test]
         fn prop_alu_division_modulo_relationship(
-            dividend in 1u16..1000, // Avoid division by zero
-            divisor in 1u16..100    // Keep divisor reasonable and non-zero
+            dividend in 1u8..=255, // Avoid division by zero
+            divisor in 1u8..100    // Keep divisor reasonable and non-zero
         ) {
             let runtime = create_runtime().unwrap();
             let mut tta = runtime.create_model_simple::<TtaTestbench>().unwrap();
@@ -979,7 +976,7 @@ mod property_tests {
             let div_program = vec![
                 instr().src(Unit::UNIT_ABS_IMMEDIATE).si(dividend).dst(Unit::UNIT_ALU_LEFT).di(0),
                 instr().src(Unit::UNIT_ABS_IMMEDIATE).si(divisor).dst(Unit::UNIT_ALU_RIGHT).di(0),
-                instr().src(Unit::UNIT_ABS_IMMEDIATE).si(ALUOp::ALU_DIV as u16).dst(Unit::UNIT_ALU_OPERATOR).di(0),
+                instr().src(Unit::UNIT_ABS_IMMEDIATE).si(ALUOp::ALU_DIV as u8).dst(Unit::UNIT_ALU_OPERATOR).di(0),
                 instr().src(Unit::UNIT_ALU_RESULT).si(0).dst(Unit::UNIT_MEMORY_IMMEDIATE).di(100),
             ];
 
@@ -1007,7 +1004,7 @@ mod property_tests {
             let mod_program = vec![
                 instr().src(Unit::UNIT_ABS_IMMEDIATE).si(dividend).dst(Unit::UNIT_ALU_LEFT).di(0),
                 instr().src(Unit::UNIT_ABS_IMMEDIATE).si(divisor).dst(Unit::UNIT_ALU_RIGHT).di(0),
-                instr().src(Unit::UNIT_ABS_IMMEDIATE).si(ALUOp::ALU_MOD as u16).dst(Unit::UNIT_ALU_OPERATOR).di(0),
+                instr().src(Unit::UNIT_ABS_IMMEDIATE).si(ALUOp::ALU_MOD as u8).dst(Unit::UNIT_ALU_OPERATOR).di(0),
                 instr().src(Unit::UNIT_ALU_RESULT).si(0).dst(Unit::UNIT_MEMORY_IMMEDIATE).di(100),
             ];
 
@@ -1033,10 +1030,10 @@ mod property_tests {
         /// Property: ALU units operate independently
         #[test]
         fn prop_alu_units_independent(
-            value1 in immediate_12bit(),
-            value2 in immediate_12bit(),
-            op1 in prop_oneof![Just(ALUOp::ALU_ADD as u16), Just(ALUOp::ALU_SUB as u16), Just(ALUOp::ALU_MUL as u16)],
-            op2 in prop_oneof![Just(ALUOp::ALU_ADD as u16), Just(ALUOp::ALU_SUB as u16), Just(ALUOp::ALU_MUL as u16)]
+            value1 in immediate_8bit(),
+            value2 in immediate_8bit(),
+            op1 in prop_oneof![Just(ALUOp::ALU_ADD as u8), Just(ALUOp::ALU_SUB as u8), Just(ALUOp::ALU_MUL as u8)],
+            op2 in prop_oneof![Just(ALUOp::ALU_ADD as u8), Just(ALUOp::ALU_SUB as u8), Just(ALUOp::ALU_MUL as u8)]
         ) {
             let runtime = create_runtime().unwrap();
             let mut tta = runtime.create_model_simple::<TtaTestbench>().unwrap();
@@ -1079,16 +1076,16 @@ mod property_tests {
 
             // Calculate expected results
             let expected0 = match op1 {
-                op if op == ALUOp::ALU_ADD as u16 => (value1 as u32).wrapping_add(value2 as u32),
-                op if op == ALUOp::ALU_SUB as u16 => (value1 as u32).wrapping_sub(value2 as u32),
-                op if op == ALUOp::ALU_MUL as u16 => (value1 as u32).wrapping_mul(value2 as u32),
+                op if op == ALUOp::ALU_ADD as u8 => (value1 as u32).wrapping_add(value2 as u32),
+                op if op == ALUOp::ALU_SUB as u8 => (value1 as u32).wrapping_sub(value2 as u32),
+                op if op == ALUOp::ALU_MUL as u8 => (value1 as u32).wrapping_mul(value2 as u32),
                 _ => unreachable!(),
             };
 
             let expected1 = match op2 {
-                op if op == ALUOp::ALU_ADD as u16 => (value2 as u32).wrapping_add(value1 as u32),
-                op if op == ALUOp::ALU_SUB as u16 => (value2 as u32).wrapping_sub(value1 as u32),
-                op if op == ALUOp::ALU_MUL as u16 => (value2 as u32).wrapping_mul(value1 as u32),
+                op if op == ALUOp::ALU_ADD as u8 => (value2 as u32).wrapping_add(value1 as u32),
+                op if op == ALUOp::ALU_SUB as u8 => (value2 as u32).wrapping_sub(value1 as u32),
+                op if op == ALUOp::ALU_MUL as u8 => (value2 as u32).wrapping_mul(value1 as u32),
                 _ => unreachable!(),
             };
 
@@ -1100,10 +1097,10 @@ mod property_tests {
         /// Property: Register banks operate independently
         #[test]
         fn prop_register_independence(
-            reg1 in 0u16..16, // Use first half of register file
-            reg2 in 16u16..32, // Use second half
-            value1 in immediate_12bit(),
-            value2 in immediate_12bit()
+            reg1 in 0u8..16, // Use first half of register file
+            reg2 in 16u8..32, // Use second half
+            value1 in immediate_8bit(),
+            value2 in immediate_8bit()
         ) {
             let runtime = create_runtime().unwrap();
             let mut tta = runtime.create_model_simple::<TtaTestbench>().unwrap();
@@ -1124,8 +1121,8 @@ mod property_tests {
                 // Read them back to memory
                 instr().src(Unit::UNIT_REGISTER).si(reg1).dst(Unit::UNIT_MEMORY_IMMEDIATE).di(100),
                 instr().src(Unit::UNIT_REGISTER).si(reg2).dst(Unit::UNIT_MEMORY_IMMEDIATE).di(101),
-                // Modify one register (0xEAD fits in 12 bits)
-                instr().src(Unit::UNIT_ABS_IMMEDIATE).si(0xEAD).dst(Unit::UNIT_REGISTER).di(reg1),
+                // Modify one register
+                instr().src(Unit::UNIT_ABS_IMMEDIATE).si(0xAD).dst(Unit::UNIT_REGISTER).di(reg1),
                 // Read both again to verify independence
                 instr().src(Unit::UNIT_REGISTER).si(reg1).dst(Unit::UNIT_MEMORY_IMMEDIATE).di(102),
                 instr().src(Unit::UNIT_REGISTER).si(reg2).dst(Unit::UNIT_MEMORY_IMMEDIATE).di(103),
@@ -1146,20 +1143,20 @@ mod property_tests {
             let final_reg2 = helper.get_data_memory(103);
 
             // Verify initial values were stored correctly
-            prop_assert_eq!(initial_reg1 & 0xFFF, value1 as u32, "Register {} should store initial value", reg1);
-            prop_assert_eq!(initial_reg2 & 0xFFF, value2 as u32, "Register {} should store initial value", reg2);
+            prop_assert_eq!(initial_reg1 & 0xFF, value1 as u32, "Register {} should store initial value", reg1);
+            prop_assert_eq!(initial_reg2 & 0xFF, value2 as u32, "Register {} should store initial value", reg2);
 
             // Verify reg1 was modified
-            prop_assert_eq!(modified_reg1 & 0xFFF, 0xEAD, "Register {} should be modified", reg1);
+            prop_assert_eq!(modified_reg1 & 0xFF, 0xAD, "Register {} should be modified", reg1);
 
             // Verify reg2 was not affected by reg1 modification
-            prop_assert_eq!(final_reg2 & 0xFFF, value2 as u32, "Register {} should be unaffected by changes to register {}", reg2, reg1);
+            prop_assert_eq!(final_reg2 & 0xFF, value2 as u32, "Register {} should be unaffected by changes to register {}", reg2, reg1);
         }
 
         /// Property: Division by zero handling is predictable
         #[test]
         fn prop_division_by_zero_handling(
-            dividend in 1u16..1000
+            dividend in 1u8..=255
         ) {
             let runtime = create_runtime().unwrap();
             let mut tta = runtime.create_model_simple::<TtaTestbench>().unwrap();
@@ -1177,7 +1174,7 @@ mod property_tests {
             let program = vec![
                 instr().src(Unit::UNIT_ABS_IMMEDIATE).si(dividend).dst(Unit::UNIT_ALU_LEFT).di(0),
                 instr().src(Unit::UNIT_ABS_IMMEDIATE).si(0).dst(Unit::UNIT_ALU_RIGHT).di(0),
-                instr().src(Unit::UNIT_ABS_IMMEDIATE).si(ALUOp::ALU_DIV as u16).dst(Unit::UNIT_ALU_OPERATOR).di(0),
+                instr().src(Unit::UNIT_ABS_IMMEDIATE).si(ALUOp::ALU_DIV as u8).dst(Unit::UNIT_ALU_OPERATOR).di(0),
                 instr().src(Unit::UNIT_ALU_RESULT).si(0).dst(Unit::UNIT_MEMORY_IMMEDIATE).di(100),
             ];
 
@@ -1216,8 +1213,8 @@ mod property_tests {
                 Just(Unit::UNIT_MEMORY_OPERAND),
                 Just(Unit::UNIT_ABS_OPERAND)
             ],
-            si in immediate_12bit(),
-            di in immediate_12bit(),
+            si in immediate_8bit(),
+            di in immediate_8bit(),
             soperand in data_value(),
             doperand in data_value()
         ) {
@@ -1251,20 +1248,12 @@ mod property_tests {
                 if src_needs_operand { 1 } else { 0 } +
                 if dst_needs_operand { 1 } else { 0 };
             prop_assert_eq!(machine_code.len(), expected_len, "Machine code length should match operand count");
-
-            // Verify immediate values are within 12-bit range
-            let packed = machine_code[0];
-            let decoded_si = (packed >> 4) & 0xFFF;
-            let decoded_di = (packed >> 20) & 0xFFF;
-
-            prop_assert_eq!(decoded_si, si as u32, "Source immediate should be preserved");
-            prop_assert_eq!(decoded_di, di as u32, "Destination immediate should be preserved");
         }
 
         /// Property: Memory boundary access behavior
         #[test]
         fn prop_memory_boundary_access(
-            offset in 0u16..10 // Small offset from boundaries
+            offset in 0u8..10 // Small offset from boundaries
         ) {
             let runtime = create_runtime().unwrap();
             let mut tta = runtime.create_model_simple::<TtaTestbench>().unwrap();
@@ -1278,9 +1267,9 @@ mod property_tests {
             tta.instr_data_read_i = 0;
             tta.data_data_read_i = 0;
 
-            // Test access near the upper bound of 12-bit addressing (4095)
-            let high_addr = 4095u16.saturating_sub(offset);
-            let test_value = 0x234; // Fits in 12 bits (0x234 = 564)
+            // Test access near the upper bound of 8-bit addressing (255)
+            let high_addr = 255u8.saturating_sub(offset);
+            let test_value: u8 = 0x34; // Fits in 8 bits
 
             let program = vec![
                 // Write to high memory address
@@ -1301,15 +1290,15 @@ mod property_tests {
             let result = helper.get_data_memory(100);
 
             // Property: Memory access near boundaries should work correctly
-            prop_assert_eq!(result & 0xFFF, test_value as u32,
+            prop_assert_eq!(result & 0xFF, test_value as u32,
                           "Memory access at address {} should work correctly", high_addr);
         }
 
         /// Property: ALU NOP operation produces zero output
         #[test]
         fn prop_alu_nop_operation(
-            value_a in immediate_12bit(),
-            value_b in immediate_12bit()
+            value_a in immediate_8bit(),
+            value_b in immediate_8bit()
         ) {
             let runtime = create_runtime().unwrap();
             let mut tta = runtime.create_model_simple::<TtaTestbench>().unwrap();
@@ -1327,7 +1316,7 @@ mod property_tests {
             let program = vec![
                 instr().src(Unit::UNIT_ABS_IMMEDIATE).si(value_a).dst(Unit::UNIT_ALU_LEFT).di(0),
                 instr().src(Unit::UNIT_ABS_IMMEDIATE).si(value_b).dst(Unit::UNIT_ALU_RIGHT).di(0),
-                instr().src(Unit::UNIT_ABS_IMMEDIATE).si(ALUOp::ALU_NOP as u16).dst(Unit::UNIT_ALU_OPERATOR).di(0),
+                instr().src(Unit::UNIT_ABS_IMMEDIATE).si(ALUOp::ALU_NOP as u8).dst(Unit::UNIT_ALU_OPERATOR).di(0),
                 instr().src(Unit::UNIT_ALU_RESULT).si(0).dst(Unit::UNIT_MEMORY_IMMEDIATE).di(100),
             ];
 
@@ -1349,7 +1338,7 @@ mod property_tests {
         /// Property: ALU NOT operation produces bitwise complement
         #[test]
         fn prop_alu_not_operation(
-            value in immediate_12bit()
+            value in immediate_8bit()
         ) {
             let runtime = create_runtime().unwrap();
             let mut tta = runtime.create_model_simple::<TtaTestbench>().unwrap();
@@ -1366,7 +1355,7 @@ mod property_tests {
             let program = vec![
                 instr().src(Unit::UNIT_ABS_IMMEDIATE).si(value).dst(Unit::UNIT_ALU_LEFT).di(0),
                 instr().src(Unit::UNIT_ABS_IMMEDIATE).si(0).dst(Unit::UNIT_ALU_RIGHT).di(0),
-                instr().src(Unit::UNIT_ABS_IMMEDIATE).si(ALUOp::ALU_NOT as u16).dst(Unit::UNIT_ALU_OPERATOR).di(0),
+                instr().src(Unit::UNIT_ABS_IMMEDIATE).si(ALUOp::ALU_NOT as u8).dst(Unit::UNIT_ALU_OPERATOR).di(0),
                 instr().src(Unit::UNIT_ALU_RESULT).si(0).dst(Unit::UNIT_MEMORY_IMMEDIATE).di(100),
             ];
 
@@ -1389,8 +1378,8 @@ mod property_tests {
         /// Property: ALU right shift operations
         #[test]
         fn prop_alu_right_shift_operations(
-            value in 0u16..1000,
-            shift_amount in 0u16..8
+            value in 0u8..=255,
+            shift_amount in 0u8..8
         ) {
             let runtime = create_runtime().unwrap();
             let mut tta = runtime.create_model_simple::<TtaTestbench>().unwrap();
@@ -1408,7 +1397,7 @@ mod property_tests {
             let program = vec![
                 instr().src(Unit::UNIT_ABS_IMMEDIATE).si(value).dst(Unit::UNIT_ALU_LEFT).di(0),
                 instr().src(Unit::UNIT_ABS_IMMEDIATE).si(shift_amount).dst(Unit::UNIT_ALU_RIGHT).di(0),
-                instr().src(Unit::UNIT_ABS_IMMEDIATE).si(ALUOp::ALU_SR as u16).dst(Unit::UNIT_ALU_OPERATOR).di(0),
+                instr().src(Unit::UNIT_ABS_IMMEDIATE).si(ALUOp::ALU_SR as u8).dst(Unit::UNIT_ALU_OPERATOR).di(0),
                 instr().src(Unit::UNIT_ALU_RESULT).si(0).dst(Unit::UNIT_MEMORY_IMMEDIATE).di(100),
             ];
 
@@ -1432,8 +1421,8 @@ mod property_tests {
         /// Property: ALU arithmetic right shift operations
         #[test]
         fn prop_alu_arithmetic_right_shift(
-            value in 0u16..1000,
-            shift_amount in 0u16..8
+            value in 0u8..=255,
+            shift_amount in 0u8..8
         ) {
             let runtime = create_runtime().unwrap();
             let mut tta = runtime.create_model_simple::<TtaTestbench>().unwrap();
@@ -1450,7 +1439,7 @@ mod property_tests {
             let program = vec![
                 instr().src(Unit::UNIT_ABS_IMMEDIATE).si(value).dst(Unit::UNIT_ALU_LEFT).di(0),
                 instr().src(Unit::UNIT_ABS_IMMEDIATE).si(shift_amount).dst(Unit::UNIT_ALU_RIGHT).di(0),
-                instr().src(Unit::UNIT_ABS_IMMEDIATE).si(ALUOp::ALU_SRA as u16).dst(Unit::UNIT_ALU_OPERATOR).di(0),
+                instr().src(Unit::UNIT_ABS_IMMEDIATE).si(ALUOp::ALU_SRA as u8).dst(Unit::UNIT_ALU_OPERATOR).di(0),
                 instr().src(Unit::UNIT_ALU_RESULT).si(0).dst(Unit::UNIT_MEMORY_IMMEDIATE).di(100),
             ];
 
@@ -1503,7 +1492,7 @@ mod property_tests {
             for i in 0..values.len() {
                 let result_addr = 200 + i;
                 program.push(instr().pop_to_reg(stack_id, 0)); // Pop to register 0
-                program.push(instr().src(Unit::UNIT_REGISTER).si(0).dst(Unit::UNIT_MEMORY_IMMEDIATE).di(result_addr as u16));
+                program.push(instr().src(Unit::UNIT_REGISTER).si(0).dst(Unit::UNIT_MEMORY_IMMEDIATE).di(result_addr as u8));
             }
 
             let mut machine_code = Vec::new();
@@ -1591,7 +1580,7 @@ mod property_tests {
     #[test]
     fn prop_stack_peek_nonmodifying(
         stack_id in 0u8..8,
-        values in prop::collection::vec(immediate_12bit(), 3..8),
+        values in prop::collection::vec(immediate_8bit(), 3..8),
         peek_offset in 0u8..5
     ) {
         let runtime = create_runtime().unwrap();
@@ -1622,7 +1611,7 @@ mod property_tests {
         // Pop all values - should still get them in LIFO order despite peeking
         for i in 0..values.len() {
             program.push(instr().pop_to_reg(stack_id, 0));
-            program.push(instr().src(Unit::UNIT_REGISTER).si(0).dst(Unit::UNIT_MEMORY_IMMEDIATE).di((200 + i) as u16));
+            program.push(instr().src(Unit::UNIT_REGISTER).si(0).dst(Unit::UNIT_MEMORY_IMMEDIATE).di((200 + i) as u8));
         }
 
         let mut machine_code = Vec::new();
@@ -1652,9 +1641,9 @@ mod property_tests {
     #[test]
     fn prop_stack_poke_selective(
         stack_id in 0u8..8,
-        initial_values in prop::collection::vec(immediate_12bit(), 4..8),
+        initial_values in prop::collection::vec(immediate_8bit(), 4..8),
         poke_offset in 0u8..3,
-        new_value in immediate_12bit()
+        new_value in immediate_8bit()
     ) {
         let runtime = create_runtime().unwrap();
         let mut tta = runtime.create_model_simple::<TtaTestbench>().unwrap();
@@ -1684,7 +1673,7 @@ mod property_tests {
         // Pop all values
         for i in 0..initial_values.len() {
             program.push(instr().pop_to_reg(stack_id, 0));
-            program.push(instr().src(Unit::UNIT_REGISTER).si(0).dst(Unit::UNIT_MEMORY_IMMEDIATE).di((200 + i) as u16));
+            program.push(instr().src(Unit::UNIT_REGISTER).si(0).dst(Unit::UNIT_MEMORY_IMMEDIATE).di((200 + i) as u8));
         }
 
         let mut machine_code = Vec::new();
@@ -1742,7 +1731,7 @@ mod property_tests {
         // Try to pop some items
         for i in 0..5 {
             program.push(instr().pop_to_reg(stack_id, 0));
-            program.push(instr().src(Unit::UNIT_REGISTER).si(0).dst(Unit::UNIT_MEMORY_IMMEDIATE).di((200 + i) as u16));
+            program.push(instr().src(Unit::UNIT_REGISTER).si(0).dst(Unit::UNIT_MEMORY_IMMEDIATE).di((200 + i) as u8));
         }
 
         let mut machine_code = Vec::new();
@@ -1816,180 +1805,12 @@ mod property_tests {
 
     }
 
-    // --- Byte/halfword memory access properties ---
-
-    /// Property: Byte write only modifies one byte lane, others are preserved
-    #[test]
-    fn prop_byte_write_preserves_other_lanes(
-        initial in data_value(),
-        write_byte in 0u8..=255,
-        lane in 0u8..4,
-    ) {
-        let runtime = create_runtime().unwrap();
-        let mut tta = runtime.create_model_simple::<TtaTestbench>().unwrap();
-        let mut helper = TtaPropertyHelper::new();
-
-        tta.rst_i = 1;
-        tta.clk_i = 0;
-        tta.instr_ready_i = 1;
-        tta.data_ready_i = 1;
-        tta.instr_data_read_i = 0;
-        tta.data_data_read_i = 0;
-
-        // Pre-fill memory at operand address 50 with initial value
-        helper.set_data_memory(50, initial);
-
-        let program = vec![
-            // Load byte value into r0
-            instr()
-                .src(Unit::UNIT_ABS_IMMEDIATE)
-                .si(write_byte as u16)
-                .dst(Unit::UNIT_REGISTER)
-                .di(0),
-            // Byte write to addr 50, selected lane
-            instr()
-                .src(Unit::UNIT_REGISTER)
-                .si(0)
-                .dst_mem_op(50, AccessWidth::Byte, lane),
-            // Read full word back to verify
-            instr()
-                .src_mem_op(50, AccessWidth::Word, 0)
-                .dst(Unit::UNIT_REGISTER)
-                .di(1),
-            instr()
-                .src(Unit::UNIT_REGISTER)
-                .si(1)
-                .dst(Unit::UNIT_MEMORY_IMMEDIATE)
-                .di(100),
-        ];
-
-        let mut machine_code = Vec::new();
-        for instr in program {
-            machine_code.extend(instr.assemble());
-        }
-        helper.load_instructions(&machine_code, 0);
-        helper.run_until_reset_released(&mut tta).unwrap();
-        helper.run_for_cycles(&mut tta, 200);
-
-        let result = helper.get_data_memory(100);
-        let mut expected_bytes = initial.to_le_bytes();
-        expected_bytes[lane as usize] = write_byte;
-        let expected = u32::from_le_bytes(expected_bytes);
-
-        prop_assert_eq!(result, expected,
-            "Byte write to lane {} should only change that byte. initial={:#010x}, wrote {:#04x}, got {:#010x}, expected {:#010x}",
-            lane, initial, write_byte, result, expected);
-    }
-
-    /// Property: Byte read extracts the correct byte and zero-extends
-    #[test]
-    fn prop_byte_read_zero_extends(
-        word in data_value(),
-        lane in 0u8..4,
-    ) {
-        let runtime = create_runtime().unwrap();
-        let mut tta = runtime.create_model_simple::<TtaTestbench>().unwrap();
-        let mut helper = TtaPropertyHelper::new();
-
-        tta.rst_i = 1;
-        tta.clk_i = 0;
-        tta.instr_ready_i = 1;
-        tta.data_ready_i = 1;
-        tta.instr_data_read_i = 0;
-        tta.data_data_read_i = 0;
-
-        helper.set_data_memory(60, word);
-
-        let program = vec![
-            // Byte read from addr 60, selected lane
-            instr()
-                .src_mem_op(60, AccessWidth::Byte, lane)
-                .dst(Unit::UNIT_MEMORY_IMMEDIATE)
-                .di(100),
-        ];
-
-        let mut machine_code = Vec::new();
-        for instr in program {
-            machine_code.extend(instr.assemble());
-        }
-        helper.load_instructions(&machine_code, 0);
-        helper.run_until_reset_released(&mut tta).unwrap();
-        helper.run_for_cycles(&mut tta, 200);
-
-        let result = helper.get_data_memory(100);
-        let expected_byte = word.to_le_bytes()[lane as usize];
-
-        prop_assert_eq!(result, expected_byte as u32,
-            "Byte read from lane {} of {:#010x} should be {:#04x}, got {:#010x}",
-            lane, word, expected_byte, result);
-    }
-
-    /// Property: Halfword write only modifies the selected half
-    #[test]
-    fn prop_halfword_write_preserves_other_half(
-        initial in data_value(),
-        write_half in 0u16..=0xFFFF,
-        high_half in prop::bool::ANY,
-    ) {
-        let runtime = create_runtime().unwrap();
-        let mut tta = runtime.create_model_simple::<TtaTestbench>().unwrap();
-        let mut helper = TtaPropertyHelper::new();
-
-        tta.rst_i = 1;
-        tta.clk_i = 0;
-        tta.instr_ready_i = 1;
-        tta.data_ready_i = 1;
-        tta.instr_data_read_i = 0;
-        tta.data_data_read_i = 0;
-
-        helper.set_data_memory(70, initial);
-        let offset = if high_half { 2u8 } else { 0u8 };
-
-        let program = vec![
-            // Load halfword value into r0
-            instr()
-                .src(Unit::UNIT_ABS_OPERAND)
-                .soperand(write_half as u32)
-                .dst(Unit::UNIT_REGISTER)
-                .di(0),
-            // Halfword write
-            instr()
-                .src(Unit::UNIT_REGISTER)
-                .si(0)
-                .dst_mem_op(70, AccessWidth::HalfWord, offset),
-            // Read back full word
-            instr()
-                .src_mem_op(70, AccessWidth::Word, 0)
-                .dst(Unit::UNIT_MEMORY_IMMEDIATE)
-                .di(100),
-        ];
-
-        let mut machine_code = Vec::new();
-        for instr in program {
-            machine_code.extend(instr.assemble());
-        }
-        helper.load_instructions(&machine_code, 0);
-        helper.run_until_reset_released(&mut tta).unwrap();
-        helper.run_for_cycles(&mut tta, 200);
-
-        let result = helper.get_data_memory(100);
-        let expected = if high_half {
-            (initial & 0x0000FFFF) | ((write_half as u32) << 16)
-        } else {
-            (initial & 0xFFFF0000) | (write_half as u32)
-        };
-
-        prop_assert_eq!(result, expected,
-            "Halfword write (high={}) should preserve other half. initial={:#010x}, wrote {:#06x}",
-            high_half, initial, write_half);
-    }
-
     // --- Conditional branch properties ---
 
     /// Property: Unconditional jump always reaches the target
     #[test]
     fn prop_unconditional_jump_always_taken(
-        marker in 1u32..4095,
+        marker in 1u32..255,
     ) {
         let runtime = create_runtime().unwrap();
         let mut tta = runtime.create_model_simple::<TtaTestbench>().unwrap();
@@ -2058,7 +1879,7 @@ mod property_tests {
         let program = vec![
             instr()
                 .src(Unit::UNIT_ABS_IMMEDIATE)
-                .si(cond_value as u16)
+                .si(cond_value as u8)
                 .dst(Unit::UNIT_COND),
             instr()
                 .src(Unit::UNIT_ABS_OPERAND)
@@ -2127,7 +1948,7 @@ mod property_tests {
                 .di(0),
             // Read TAG → mem[100]
             instr()
-                .src_reg(0, RegMode::Tag)
+                .src_reg_tag(0)
                 .dst(Unit::UNIT_MEMORY_IMMEDIATE)
                 .di(100),
         ];
@@ -2168,7 +1989,7 @@ mod property_tests {
                 .dst(Unit::UNIT_REGISTER)
                 .di(0),
             instr()
-                .src_reg(0, RegMode::Value)
+                .src_reg_value(0)
                 .dst(Unit::UNIT_MEMORY_IMMEDIATE)
                 .di(100),
         ];
@@ -2211,15 +2032,15 @@ mod property_tests {
                 .di(0),
             // Read all three modes
             instr()
-                .src_reg(0, RegMode::Raw)
+                .src_reg(0)
                 .dst(Unit::UNIT_MEMORY_IMMEDIATE)
                 .di(100),
             instr()
-                .src_reg(0, RegMode::Value)
+                .src_reg_value(0)
                 .dst(Unit::UNIT_MEMORY_IMMEDIATE)
                 .di(101),
             instr()
-                .src_reg(0, RegMode::Tag)
+                .src_reg_tag(0)
                 .dst(Unit::UNIT_MEMORY_IMMEDIATE)
                 .di(102),
         ];
@@ -2268,21 +2089,21 @@ mod property_tests {
             // Write new tag (preserves payload)
             instr()
                 .src(Unit::UNIT_ABS_IMMEDIATE)
-                .si(new_tag as u16)
-                .dst_reg(0, RegMode::Tag),
+                .si(new_tag as u8)
+                .dst_reg_tag(0),
             // Read raw after TAG write → mem[100]
             instr()
-                .src_reg(0, RegMode::Raw)
+                .src_reg(0)
                 .dst(Unit::UNIT_MEMORY_IMMEDIATE)
                 .di(100),
             // Now write new payload (preserves tag)
             instr()
                 .src(Unit::UNIT_ABS_OPERAND)
                 .soperand(new_payload)
-                .dst_reg(0, RegMode::Value),
+                .dst_reg_value(0),
             // Read raw after VALUE write → mem[101]
             instr()
-                .src_reg(0, RegMode::Raw)
+                .src_reg(0)
                 .dst(Unit::UNIT_MEMORY_IMMEDIATE)
                 .di(101),
         ];
@@ -2348,7 +2169,7 @@ mod property_tests {
             instr()
                 .src_deref(0, offset)
                 .dst(Unit::UNIT_MEMORY_IMMEDIATE)
-                .di(500),
+                .di(250),
         ];
 
         let mut machine_code = Vec::new();
@@ -2359,57 +2180,10 @@ mod property_tests {
         helper.run_until_reset_released(&mut tta).unwrap();
         helper.run_for_cycles(&mut tta, 200);
 
-        let result = helper.get_data_memory(500);
+        let result = helper.get_data_memory(250);
         prop_assert_eq!(result, stored_value,
             "DEREF of tagged_ptr={:#010x} (addr={}, tag={}) + offset={} should read value at addr {}",
             tagged_ptr, aligned_addr, tag, offset, aligned_addr + offset as u32);
-    }
-
-    /// Property: Halfword read extracts the correct half and zero-extends
-    #[test]
-    fn prop_halfword_read_zero_extends(
-        word in data_value(),
-        high_half in prop::bool::ANY,
-    ) {
-        let runtime = create_runtime().unwrap();
-        let mut tta = runtime.create_model_simple::<TtaTestbench>().unwrap();
-        let mut helper = TtaPropertyHelper::new();
-
-        tta.rst_i = 1;
-        tta.clk_i = 0;
-        tta.instr_ready_i = 1;
-        tta.data_ready_i = 1;
-        tta.instr_data_read_i = 0;
-        tta.data_data_read_i = 0;
-
-        helper.set_data_memory(60, word);
-        let offset = if high_half { 2u8 } else { 0u8 };
-
-        let program = vec![
-            instr()
-                .src_mem_op(60, AccessWidth::HalfWord, offset)
-                .dst(Unit::UNIT_MEMORY_IMMEDIATE)
-                .di(100),
-        ];
-
-        let mut machine_code = Vec::new();
-        for instr in program {
-            machine_code.extend(instr.assemble());
-        }
-        helper.load_instructions(&machine_code, 0);
-        helper.run_until_reset_released(&mut tta).unwrap();
-        helper.run_for_cycles(&mut tta, 200);
-
-        let result = helper.get_data_memory(100);
-        let expected = if high_half {
-            (word >> 16) & 0xFFFF
-        } else {
-            word & 0xFFFF
-        };
-
-        prop_assert_eq!(result, expected,
-            "Halfword read (high={}) of {:#010x} should be {:#06x}, got {:#06x}",
-            high_half, word, expected, result);
     }
 
     /// Property: DEREF write stores to (reg & ~TAG_MASK) + offset
@@ -2485,7 +2259,7 @@ mod property_tests {
             // Set condition register
             instr()
                 .src(Unit::UNIT_ABS_IMMEDIATE)
-                .si(value as u16)
+                .si(value as u8)
                 .dst(Unit::UNIT_COND),
             // Read condition register back to mem[100]
             instr()
@@ -2715,7 +2489,7 @@ mod property_tests {
                 .dst(Unit::UNIT_REGISTER)
                 .di(2),
             instr()
-                .src_reg(1, RegMode::Tag)
+                .src_reg_tag(1)
                 .dst(Unit::UNIT_COND),
             instr()
                 .src(Unit::UNIT_ABS_OPERAND)
@@ -2735,11 +2509,11 @@ mod property_tests {
                 .di(201),
             // Store car and cdr for verification
             instr()
-                .src_reg(1, RegMode::Raw)
+                .src_reg(1)
                 .dst(Unit::UNIT_MEMORY_IMMEDIATE)
                 .di(202),
             instr()
-                .src_reg(2, RegMode::Raw)
+                .src_reg(2)
                 .dst(Unit::UNIT_MEMORY_IMMEDIATE)
                 .di(203),
         ];
@@ -2778,8 +2552,8 @@ mod property_tests {
     /// Property: ALU comparison ops correctly feed COND → PC_COND
     #[test]
     fn prop_compare_and_branch_ops(
-        a in 0u32..1000,
-        b in 0u32..1000,
+        a in 0u32..256,
+        b in 0u32..256,
         op_idx in 0u8..3,  // 0=EQL, 1=GT, 2=LT
     ) {
         let runtime = create_runtime().unwrap();
@@ -2794,26 +2568,26 @@ mod property_tests {
         tta.data_data_read_i = 0;
 
         let (alu_op, expected_result) = match op_idx {
-            0 => (ALUOp::ALU_EQL as u16, if a == b { 1u32 } else { 0 }),
-            1 => (ALUOp::ALU_GT as u16,  if a > b  { 1u32 } else { 0 }),
-            _ => (ALUOp::ALU_LT as u16,  if a < b  { 1u32 } else { 0 }),
+            0 => (ALUOp::ALU_EQL as u8, if a == b { 1u32 } else { 0 }),
+            1 => (ALUOp::ALU_GT as u8,  if a > b  { 1u32 } else { 0 }),
+            _ => (ALUOp::ALU_LT as u8,  if a < b  { 1u32 } else { 0 }),
         };
 
         // Use ABS_IMMEDIATE for small values to keep instructions single-word
         // where possible, making address arithmetic simpler.
-        // addr 0: a → alu[0].left     (ABS_IMM, 1 word — only low 12 bits, a < 1000)
+        // addr 0: a → alu[0].left     (ABS_IMM, 1 word)
         // addr 1: b → alu[0].right    (ABS_IMM, 1 word)
         // addr 2: op → alu[0].operator(ABS_IMM, 1 word)
         // addr 3: alu[0].result → cond(1 word)
-        // addr 4-5: conditional jump to addr 7 (ABS_OPERAND, 2 words)
-        // addr 6: store marker → mem[100] (ABS_IMM, 1 word)
-        // addr 7: store done → mem[101] (ABS_IMM, 1 word)
+        // addr 4-5: conditional jump to addr 8 (ABS_OPERAND, 2 words)
+        // addr 6-7: store marker → mem[100] (ABS_OPERAND, 2 words)
+        // addr 8-9: store done → mem[101] (ABS_OPERAND, 2 words)
         let program = vec![
             instr()
-                .src(Unit::UNIT_ABS_IMMEDIATE).si(a as u16)
+                .src(Unit::UNIT_ABS_IMMEDIATE).si(a as u8)
                 .dst(Unit::UNIT_ALU_LEFT).di(0),
             instr()
-                .src(Unit::UNIT_ABS_IMMEDIATE).si(b as u16)
+                .src(Unit::UNIT_ABS_IMMEDIATE).si(b as u8)
                 .dst(Unit::UNIT_ALU_RIGHT).di(0),
             instr()
                 .src(Unit::UNIT_ABS_IMMEDIATE).si(alu_op)
@@ -2822,15 +2596,15 @@ mod property_tests {
                 .src(Unit::UNIT_ALU_RESULT).si(0)
                 .dst(Unit::UNIT_COND),
             instr()
-                .src(Unit::UNIT_ABS_OPERAND).soperand(7)
+                .src(Unit::UNIT_ABS_OPERAND).soperand(8)
                 .dst(Unit::UNIT_PC_COND),
-            // addr 6: comparison was false — write a distinctive marker
+            // addr 6-7: comparison was false — write a distinctive marker
             instr()
-                .src(Unit::UNIT_ABS_IMMEDIATE).si(0xFAF)
+                .src(Unit::UNIT_ABS_OPERAND).soperand(0xFAF)
                 .dst(Unit::UNIT_MEMORY_IMMEDIATE).di(100),
-            // addr 7: always reached
+            // addr 8-9: always reached
             instr()
-                .src(Unit::UNIT_ABS_IMMEDIATE).si(0xD0E)
+                .src(Unit::UNIT_ABS_OPERAND).soperand(0xD0E)
                 .dst(Unit::UNIT_MEMORY_IMMEDIATE).di(101),
         ];
 
@@ -2845,9 +2619,9 @@ mod property_tests {
         let mem100 = helper.get_data_memory(100);
         let mem101 = helper.get_data_memory(101);
 
-        prop_assert_eq!(mem101, 0xD0E, "addr 7 should always execute");
+        prop_assert_eq!(mem101, 0xD0E, "addr 8 should always execute");
         if expected_result != 0 {
-            // Branch taken — addr 6 should be skipped (mem100 stays 0)
+            // Branch taken — addr 6-7 should be skipped (mem100 stays 0)
             prop_assert_eq!(mem100, 0,
                 "Comparison true (a={}, b={}, op={}): branch taken, addr 6 skipped",
                 a, b, op_idx);
@@ -2881,27 +2655,26 @@ mod property_tests {
 
         // addr 0:   set cond = 1
         // addr 1-2: branch to addr 5 (TAKEN — skip addr 3-4)
-        // addr 3:   store 0xBAD → mem[100]  (skipped)
-        // addr 4:   nop padding
+        // addr 3-4: store 0xBAD → mem[100]  (skipped, 2-word)
         // addr 5:   set cond = 0
         // addr 6-7: branch to addr 10 (NOT TAKEN — fall through)
-        // addr 8:   store 0x111 → mem[100]  (should execute)
-        // addr 9:   store 0x222 → mem[101]  (should execute)
+        // addr 8:   store 0x11 → mem[100]  (should execute)
+        // addr 9:   store 0x22 → mem[101]  (should execute)
         let program = vec![
             // addr 0
             instr().src(Unit::UNIT_ABS_IMMEDIATE).si(1).dst(Unit::UNIT_COND),
             // addr 1-2: branch taken → addr 5
             instr().src(Unit::UNIT_ABS_OPERAND).soperand(5).dst(Unit::UNIT_PC_COND),
-            // addr 3 (skipped)
+            // addr 3-4 (skipped)
             instr().src(Unit::UNIT_ABS_OPERAND).soperand(0xBAD).dst(Unit::UNIT_MEMORY_IMMEDIATE).di(100),
             // addr 5: set cond = 0
             instr().src(Unit::UNIT_ABS_IMMEDIATE).si(0).dst(Unit::UNIT_COND),
             // addr 6-7: branch not taken → addr 10
             instr().src(Unit::UNIT_ABS_OPERAND).soperand(10).dst(Unit::UNIT_PC_COND),
             // addr 8: should execute (branch not taken)
-            instr().src(Unit::UNIT_ABS_IMMEDIATE).si(0x111).dst(Unit::UNIT_MEMORY_IMMEDIATE).di(100),
+            instr().src(Unit::UNIT_ABS_IMMEDIATE).si(0x11).dst(Unit::UNIT_MEMORY_IMMEDIATE).di(100),
             // addr 9
-            instr().src(Unit::UNIT_ABS_IMMEDIATE).si(0x222).dst(Unit::UNIT_MEMORY_IMMEDIATE).di(101),
+            instr().src(Unit::UNIT_ABS_IMMEDIATE).si(0x22).dst(Unit::UNIT_MEMORY_IMMEDIATE).di(101),
         ];
 
         let mut machine_code = Vec::new();
@@ -2912,9 +2685,9 @@ mod property_tests {
         helper.run_until_reset_released(&mut tta).unwrap();
         helper.run_for_cycles(&mut tta, 300);
 
-        prop_assert_eq!(helper.get_data_memory(100), 0x111,
-            "After taken then not-taken branch, addr 8 should write 0x111");
-        prop_assert_eq!(helper.get_data_memory(101), 0x222,
+        prop_assert_eq!(helper.get_data_memory(100), 0x11,
+            "After taken then not-taken branch, addr 8 should write 0x11");
+        prop_assert_eq!(helper.get_data_memory(101), 0x22,
             "Addr 9 should execute after the not-taken branch");
     }
 
@@ -2937,29 +2710,29 @@ mod property_tests {
         tta.instr_data_read_i = 0;
         tta.data_data_read_i = 0;
 
-        // Skipped instructions write to DISTINCT addresses (mem[300], mem[301])
+        // Skipped instructions write to DISTINCT addresses (mem[210], mem[211])
         // so a transiently executed wrong-path store is observable even if the
         // correct-path store later overwrites a shared address.
         //
         // addr 0-1: jump to addr 6
-        // addr 2-3: 2-word store 0xBAD → mem[300] (wrong path, should NOT execute)
-        // addr 4-5: 2-word store 0xBAD → mem[301] (wrong path, should NOT execute)
-        // addr 6:   store 0xACE → mem[100] (branch target)
-        // addr 7:   store 0xBEE → mem[101]
+        // addr 2-3: 2-word store 0xBAD → mem[210] (wrong path, should NOT execute)
+        // addr 4-5: 2-word store 0xBAD → mem[211] (wrong path, should NOT execute)
+        // addr 6:   store 0xAC → mem[100] (branch target)
+        // addr 7:   store 0xBE → mem[101]
         let program = vec![
             // addr 0-1: jump
             instr().src(Unit::UNIT_ABS_OPERAND).soperand(6).dst(Unit::UNIT_PC),
             // addr 2-3: wrong path — distinct sink address
             instr().src(Unit::UNIT_ABS_OPERAND).soperand(0xBAD)
-                   .dst(Unit::UNIT_MEMORY_IMMEDIATE).di(300),
+                   .dst(Unit::UNIT_MEMORY_IMMEDIATE).di(210),
             // addr 4-5: wrong path — distinct sink address
             instr().src(Unit::UNIT_ABS_OPERAND).soperand(0xBAD)
-                   .dst(Unit::UNIT_MEMORY_IMMEDIATE).di(301),
+                   .dst(Unit::UNIT_MEMORY_IMMEDIATE).di(211),
             // addr 6: branch target
-            instr().src(Unit::UNIT_ABS_IMMEDIATE).si(0xACE)
+            instr().src(Unit::UNIT_ABS_IMMEDIATE).si(0xAC)
                    .dst(Unit::UNIT_MEMORY_IMMEDIATE).di(100),
             // addr 7
-            instr().src(Unit::UNIT_ABS_IMMEDIATE).si(0xBEE)
+            instr().src(Unit::UNIT_ABS_IMMEDIATE).si(0xBE)
                    .dst(Unit::UNIT_MEMORY_IMMEDIATE).di(101),
         ];
 
@@ -2971,14 +2744,14 @@ mod property_tests {
         helper.run_until_reset_released(&mut tta).unwrap();
         helper.run_for_cycles(&mut tta, 300);
 
-        prop_assert_eq!(helper.get_data_memory(100), 0xACE,
-            "Branch target should write 0xACE");
-        prop_assert_eq!(helper.get_data_memory(101), 0xBEE,
+        prop_assert_eq!(helper.get_data_memory(100), 0xAC,
+            "Branch target should write 0xAC");
+        prop_assert_eq!(helper.get_data_memory(101), 0xBE,
             "Instruction after branch target should execute");
-        prop_assert_eq!(helper.get_data_memory(300), 0,
-            "Wrong-path store to mem[300] should never have executed");
-        prop_assert_eq!(helper.get_data_memory(301), 0,
-            "Wrong-path store to mem[301] should never have executed");
+        prop_assert_eq!(helper.get_data_memory(210), 0,
+            "Wrong-path store to mem[210] should never have executed");
+        prop_assert_eq!(helper.get_data_memory(211), 0,
+            "Wrong-path store to mem[211] should never have executed");
     }
 
     /// Back-to-back instructions where the first is multi-cycle (memory
@@ -3107,32 +2880,32 @@ mod property_tests {
         tta.instr_data_read_i = 0;
         tta.data_data_read_i = 0;
 
-        // Skipped instructions write to DISTINCT addresses (mem[300], mem[301])
+        // Skipped instructions write to DISTINCT addresses (mem[210], mem[211])
         // so transient wrong-path execution is observable.
         //
         // addr 0-1: jump to addr 4
-        // addr 2:   store 0xBA1 → mem[300] (wrong path 1, should NOT execute)
+        // addr 2:   store 0xB1 → mem[210] (wrong path 1, should NOT execute)
         // addr 3:   nop padding
         // addr 4-5: jump to addr 8
-        // addr 6:   store 0xBA2 → mem[301] (wrong path 2, should NOT execute)
+        // addr 6:   store 0xB2 → mem[211] (wrong path 2, should NOT execute)
         // addr 7:   nop padding
-        // addr 8:   store 0x999 → mem[100]
+        // addr 8:   store 0x99 → mem[100]
         // addr 9:   read PC → mem[101]
         let program = vec![
             // addr 0-1: first jump
             instr().src(Unit::UNIT_ABS_OPERAND).soperand(4).dst(Unit::UNIT_PC),
             // addr 2: wrong path — distinct sink
-            instr().src(Unit::UNIT_ABS_IMMEDIATE).si(0xBA1).dst(Unit::UNIT_MEMORY_IMMEDIATE).di(300),
+            instr().src(Unit::UNIT_ABS_IMMEDIATE).si(0xB1).dst(Unit::UNIT_MEMORY_IMMEDIATE).di(210),
             // addr 3 padding
             instr().src(Unit::UNIT_ABS_IMMEDIATE).si(0).dst(Unit::UNIT_REGISTER).di(0),
             // addr 4-5: second jump
             instr().src(Unit::UNIT_ABS_OPERAND).soperand(8).dst(Unit::UNIT_PC),
             // addr 6: wrong path — distinct sink
-            instr().src(Unit::UNIT_ABS_IMMEDIATE).si(0xBA2).dst(Unit::UNIT_MEMORY_IMMEDIATE).di(301),
+            instr().src(Unit::UNIT_ABS_IMMEDIATE).si(0xB2).dst(Unit::UNIT_MEMORY_IMMEDIATE).di(211),
             // addr 7 padding
             instr().src(Unit::UNIT_ABS_IMMEDIATE).si(0).dst(Unit::UNIT_REGISTER).di(0),
             // addr 8: final target
-            instr().src(Unit::UNIT_ABS_IMMEDIATE).si(0x999).dst(Unit::UNIT_MEMORY_IMMEDIATE).di(100),
+            instr().src(Unit::UNIT_ABS_IMMEDIATE).si(0x99).dst(Unit::UNIT_MEMORY_IMMEDIATE).di(100),
             // addr 9: verify PC
             instr().src(Unit::UNIT_PC).dst(Unit::UNIT_MEMORY_IMMEDIATE).di(101),
         ];
@@ -3145,13 +2918,13 @@ mod property_tests {
         helper.run_until_reset_released(&mut tta).unwrap();
         helper.run_for_cycles(&mut tta, 300);
 
-        prop_assert_eq!(helper.get_data_memory(100), 0x999,
+        prop_assert_eq!(helper.get_data_memory(100), 0x99,
             "Only the final branch target should write to mem[100]");
         prop_assert_eq!(helper.get_data_memory(101), 10,
             "PC at addr 9 should be 10 after two consecutive jumps");
-        prop_assert_eq!(helper.get_data_memory(300), 0,
+        prop_assert_eq!(helper.get_data_memory(210), 0,
             "Wrong-path store after first jump should never execute");
-        prop_assert_eq!(helper.get_data_memory(301), 0,
+        prop_assert_eq!(helper.get_data_memory(211), 0,
             "Wrong-path store after second jump should never execute");
     }
 

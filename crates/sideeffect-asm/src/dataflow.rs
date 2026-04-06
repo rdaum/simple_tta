@@ -65,11 +65,11 @@ impl AluBinOp {
 #[derive(Debug, Clone)]
 enum Node {
     Constant(u32),
-    LoadReg(u16),
+    LoadReg(u8),
     LoadMem(u32),
     AluBin(AluBinOp, Value, Value),
     Not(Value),
-    StoreReg(u16, Value),
+    StoreReg(u8, Value),
     StoreMem(u32, Value),
     SetCond(Value),
     BranchCond(Value),
@@ -122,7 +122,7 @@ impl Graph {
         self.push(Node::Constant(val))
     }
 
-    pub fn load_reg(&mut self, reg: u16) -> Value {
+    pub fn load_reg(&mut self, reg: u8) -> Value {
         self.push(Node::LoadReg(reg))
     }
 
@@ -150,7 +150,7 @@ impl Graph {
 
     // --- Side effects ---
 
-    pub fn store_reg(&mut self, reg: u16, val: Value) { self.push(Node::StoreReg(reg, val)); }
+    pub fn store_reg(&mut self, reg: u8, val: Value) { self.push(Node::StoreReg(reg, val)); }
     pub fn store_mem(&mut self, addr: u32, val: Value) { self.push(Node::StoreMem(addr, val)); }
     pub fn set_cond(&mut self, val: Value) { self.push(Node::SetCond(val)); }
     pub fn branch_cond(&mut self, target: Value) { self.push(Node::BranchCond(target)); }
@@ -173,9 +173,9 @@ impl Graph {
 /// Tracks where a Value currently lives.
 #[derive(Debug, Clone)]
 enum Location {
-    SmallImm(u16),
+    SmallImm(u8),
     LargeImm(u32),
-    Reg(u16),
+    Reg(u8),
     AluResult(u8),
     Pending,
 }
@@ -192,7 +192,7 @@ struct PendingAlu {
 struct Emitter {
     locations: Vec<Location>,
     next_lane: u8,
-    next_tmp_reg: u16,
+    next_tmp_reg: u8,
     output: Vec<Instr>,
     /// Pending ALU ops collected for interleaving.
     pending_alus: Vec<PendingAlu>,
@@ -221,7 +221,7 @@ impl Emitter {
         lane
     }
 
-    fn alloc_tmp_reg(&mut self) -> u16 {
+    fn alloc_tmp_reg(&mut self) -> u8 {
         let reg = self.next_tmp_reg;
         self.next_tmp_reg += 1;
         assert!(self.next_tmp_reg <= 32, "Out of temporary registers");
@@ -232,7 +232,7 @@ impl Emitter {
         self.locations[val.0].clone()
     }
 
-    fn emit_move_to_dst(&mut self, loc: &Location, dst_unit: Unit, di: u16) {
+    fn emit_move_to_dst(&mut self, loc: &Location, dst_unit: Unit, di: u8) {
         match loc {
             Location::SmallImm(v) => {
                 self.output.push(
@@ -251,14 +251,14 @@ impl Emitter {
             }
             Location::AluResult(lane) => {
                 self.output.push(
-                    instr().src(Unit::UNIT_ALU_RESULT).si(*lane as u16).dst(dst_unit).di(di),
+                    instr().src(Unit::UNIT_ALU_RESULT).si(*lane).dst(dst_unit).di(di),
                 );
             }
             Location::Pending => panic!("Cannot emit from pending location"),
         }
     }
 
-    fn ensure_in_reg(&mut self, val: Value) -> u16 {
+    fn ensure_in_reg(&mut self, val: Value) -> u8 {
         let loc = self.materialize(val);
         match loc {
             Location::Reg(r) => r,
@@ -281,20 +281,20 @@ impl Emitter {
 
         // Phase 1: set all left operands.
         for p in &pending {
-            self.emit_move_to_dst(&p.left, Unit::UNIT_ALU_LEFT, p.lane as u16);
+            self.emit_move_to_dst(&p.left, Unit::UNIT_ALU_LEFT, p.lane);
         }
         // Phase 2: set all right operands.
         for p in &pending {
-            self.emit_move_to_dst(&p.right, Unit::UNIT_ALU_RIGHT, p.lane as u16);
+            self.emit_move_to_dst(&p.right, Unit::UNIT_ALU_RIGHT, p.lane);
         }
         // Phase 3: set all operators.
         for p in &pending {
             self.output.push(
                 instr()
                     .src(Unit::UNIT_ABS_IMMEDIATE)
-                    .si(p.op.to_alu_op() as u16)
+                    .si(p.op.to_alu_op() as u8)
                     .dst(Unit::UNIT_ALU_OPERATOR)
-                    .di(p.lane as u16),
+                    .di(p.lane),
             );
         }
         // Record result locations.
@@ -310,8 +310,8 @@ impl Emitter {
         for (i, node) in nodes.iter().enumerate() {
             match node {
                 Node::Constant(v) => {
-                    self.locations[i] = if *v < 4096 {
-                        Location::SmallImm(*v as u16)
+                    self.locations[i] = if *v < 256 {
+                        Location::SmallImm(*v as u8)
                     } else {
                         Location::LargeImm(*v)
                     };
@@ -325,7 +325,6 @@ impl Emitter {
 
         // Second pass: emit operations, batching ALU ops for interleaving.
         for i in 0..nodes.len() {
-            // If the current node is NOT an ALU op, flush any pending ALUs first.
             let is_alu = matches!(&nodes[i], Node::AluBin(..));
             if !is_alu {
                 self.flush_pending_alus();
@@ -336,16 +335,16 @@ impl Emitter {
 
                 Node::LoadMem(addr) => {
                     let reg = self.alloc_tmp_reg();
-                    if *addr < 4096 {
+                    if *addr < 256 {
                         self.output.push(
                             instr()
-                                .src(Unit::UNIT_MEMORY_IMMEDIATE).si(*addr as u16)
+                                .src(Unit::UNIT_MEMORY_IMMEDIATE).si(*addr as u8)
                                 .dst(Unit::UNIT_REGISTER).di(reg),
                         );
                     } else {
                         self.output.push(
                             instr()
-                                .src_mem_op(*addr, crate::assembler::AccessWidth::Word, 0)
+                                .src_mem_op(*addr)
                                 .dst(Unit::UNIT_REGISTER).di(reg),
                         );
                     }
@@ -357,8 +356,6 @@ impl Emitter {
                     let left_loc = self.materialize(*left);
                     let right_loc = self.materialize(*right);
 
-                    // If either operand is an AluResult, materialize it to a
-                    // register BEFORE batching (the ALU lane might get reused).
                     let left_loc = match left_loc {
                         Location::AluResult(_) => {
                             let r = self.ensure_in_reg(*left);
@@ -386,13 +383,13 @@ impl Emitter {
                 Node::Not(val) => {
                     let lane = self.alloc_lane();
                     let loc = self.materialize(*val);
-                    self.emit_move_to_dst(&loc, Unit::UNIT_ALU_LEFT, lane as u16);
+                    self.emit_move_to_dst(&loc, Unit::UNIT_ALU_LEFT, lane);
                     self.output.push(
                         instr()
                             .src(Unit::UNIT_ABS_IMMEDIATE)
-                            .si(ALUOp::ALU_NOT as u16)
+                            .si(ALUOp::ALU_NOT as u8)
                             .dst(Unit::UNIT_ALU_OPERATOR)
-                            .di(lane as u16),
+                            .di(lane),
                     );
                     self.locations[i] = Location::AluResult(lane);
                 }
@@ -404,14 +401,14 @@ impl Emitter {
 
                 Node::StoreMem(addr, val) => {
                     let loc = self.materialize(*val);
-                    if *addr < 4096 {
-                        self.emit_move_to_dst(&loc, Unit::UNIT_MEMORY_IMMEDIATE, *addr as u16);
+                    if *addr < 256 {
+                        self.emit_move_to_dst(&loc, Unit::UNIT_MEMORY_IMMEDIATE, *addr as u8);
                     } else {
                         let reg = self.ensure_in_reg(*val);
                         self.output.push(
                             instr()
                                 .src(Unit::UNIT_REGISTER).si(reg)
-                                .dst_mem_op(*addr, crate::assembler::AccessWidth::Word, 0),
+                                .dst_mem_op(*addr),
                         );
                     }
                 }
@@ -432,7 +429,6 @@ impl Emitter {
                 }
 
                 Node::BranchCondLabel(label) => {
-                    // Emit a placeholder branch with target 0; fix up after layout.
                     let idx = self.output.len();
                     self.output.push(
                         instr()
@@ -464,7 +460,6 @@ impl Emitter {
                 }
 
                 Node::LabelDef(label) => {
-                    // Record the word offset of the NEXT instruction.
                     let word_offset: usize = self.output.iter()
                         .map(|i| i.assemble().len())
                         .sum();
@@ -480,11 +475,10 @@ impl Emitter {
         for (instr_idx, label) in &self.label_fixups {
             let target_addr = self.label_positions[label.0]
                 .unwrap_or_else(|| panic!("Label {:?} was never placed", label));
-            // Rebuild the instruction with the correct target address.
             let old = &self.output[*instr_idx];
-            // Determine if it's PC or PC_COND by checking the dst unit.
             let assembled = old.assemble();
-            let dst_unit_bits = (assembled[0] >> 16) & 0xF;
+            // Extract dst_unit from new encoding: bits [9:5]
+            let dst_unit_bits = (assembled[0] >> 5) & 0x1F;
             let dst_unit = if dst_unit_bits == Unit::UNIT_PC_COND as u32 {
                 Unit::UNIT_PC_COND
             } else {
@@ -542,10 +536,11 @@ mod tests {
         assert_eq!(moves.len(), 8);
 
         // Verify interleaving: first two moves should target different ALU lanes.
+        // di is at bits [25:18] in the new encoding.
         let w0 = moves[0].assemble();
         let w1 = moves[1].assemble();
-        let lane_0 = (w0[0] >> 20) & 0xFFF;
-        let lane_1 = (w1[0] >> 20) & 0xFFF;
+        let lane_0 = (w0[0] >> 18) & 0xFF;
+        let lane_1 = (w1[0] >> 18) & 0xFF;
         assert_eq!(lane_0, 0, "First left should target lane 0");
         assert_eq!(lane_1, 1, "Second left should target lane 1");
     }
@@ -561,8 +556,6 @@ mod tests {
         g.store_reg(0, prod);
 
         let moves = g.compile();
-        // sum: 3 (interleaved alone), then sum.result→reg (1),
-        // prod: 3 (interleaved alone) + store (1) = 8 total
         assert!(!moves.is_empty());
     }
 
@@ -597,14 +590,10 @@ mod tests {
         g.place_label(done);
 
         let moves = g.compile();
-        // Verify the branch instruction has the correct target.
-        // The branch is the 2nd instruction (after set_cond).
-        // It should target the word address of the label.
         let branch_instr = &moves[1];
         let words = branch_instr.assemble();
         assert_eq!(words.len(), 2, "Branch should be 2-word (ABS_OPERAND)");
         let target = words[1];
-        // The target should be > 0 (it's after the skipped store).
         assert!(target > 0, "Label target should be resolved to a non-zero address");
     }
 
@@ -628,11 +617,11 @@ mod tests {
         // 3 lefts + 3 rights + 3 ops + 3 stores = 12
         assert_eq!(moves.len(), 12);
 
-        // First three moves should be the interleaved left operands
-        // targeting lanes 0, 1, 2.
-        for (i, expected_lane) in [0u16, 1, 2].iter().enumerate() {
+        // First three moves should target lanes 0, 1, 2.
+        // di is at bits [25:18].
+        for (i, expected_lane) in [0u8, 1, 2].iter().enumerate() {
             let w = moves[i].assemble();
-            let lane = (w[0] >> 20) & 0xFFF;
+            let lane = (w[0] >> 18) & 0xFF;
             assert_eq!(lane, *expected_lane as u32,
                 "Move {} should target lane {}", i, expected_lane);
         }
