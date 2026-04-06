@@ -2508,7 +2508,9 @@ mod property_tests {
             "COND readback after writing {} should be {}", value, expected);
     }
 
-    /// Property: UNIT_PC as source returns the current program counter
+    /// Property: UNIT_PC as source returns the current program counter.
+    /// The sequencer advances PC past the instruction before execute
+    /// sees it, so reading PC at instruction address N returns N+1.
     #[test]
     fn prop_pc_read(
         _dummy in 0u32..1,  // just need one run
@@ -2519,20 +2521,15 @@ mod property_tests {
 
         tta.rst_i = 1;
         tta.clk_i = 0;
-        tta.instr_ready_i = 1;
-        tta.data_ready_i = 1;
+        tta.instr_ready_i = 0;
+        tta.data_ready_i = 0;
         tta.instr_data_read_i = 0;
         tta.data_data_read_i = 0;
 
-        // addr 0: no-op (advance PC to 1)
-        // addr 1: read PC → mem[100]  (PC should be 2 since sequencer advances before execute)
-        // addr 2: read PC → mem[101]  (PC should be 3)
+        // addr 0: read PC → mem[100]
+        // addr 1: read PC → mem[101]
+        // Each is a 1-word instruction, so PC = addr+1 when execute reads it.
         let program = vec![
-            instr()
-                .src(Unit::UNIT_ABS_IMMEDIATE)
-                .si(0)
-                .dst(Unit::UNIT_REGISTER)
-                .di(0),
             instr()
                 .src(Unit::UNIT_PC)
                 .dst(Unit::UNIT_MEMORY_IMMEDIATE)
@@ -2551,12 +2548,83 @@ mod property_tests {
         helper.run_until_reset_released(&mut tta).unwrap();
         helper.run_for_cycles(&mut tta, 200);
 
-        let pc_at_1 = helper.get_data_memory(100);
-        let pc_at_2 = helper.get_data_memory(101);
+        let pc_at_0 = helper.get_data_memory(100);
+        let pc_at_1 = helper.get_data_memory(101);
 
-        // PC should increment by 1 for each single-word instruction
-        prop_assert_eq!(pc_at_2, pc_at_1 + 1,
-            "PC should increment by 1 between consecutive instructions");
+        // Sequencer advances PC past the instruction word before handing
+        // off to execute, so instruction at address N sees PC = N+1.
+        prop_assert_eq!(pc_at_0, 1, "PC read at addr 0 should return 1");
+        prop_assert_eq!(pc_at_1, 2, "PC read at addr 1 should return 2");
+    }
+
+    /// Property: A taken branch flushes the prefetch and execution
+    /// resumes from the branch target, not from the prefetched address.
+    #[test]
+    fn prop_branch_flushes_prefetch(
+        _dummy in 0u32..1,
+    ) {
+        let runtime = create_runtime().unwrap();
+        let mut tta = runtime.create_model_simple::<TtaTestbench>().unwrap();
+        let mut helper = TtaPropertyHelper::new();
+
+        tta.rst_i = 1;
+        tta.clk_i = 0;
+        tta.instr_ready_i = 0;
+        tta.data_ready_i = 0;
+        tta.instr_data_read_i = 0;
+        tta.data_data_read_i = 0;
+
+        // addr 0-1: jump to addr 4 (2-word: opcode + operand)
+        // addr 2:   store 0xBAD to mem[100]  (should be SKIPPED by flush)
+        // addr 3:   store 0xBAD to mem[101]  (should be SKIPPED by flush)
+        // addr 4:   store 0xOK to mem[100]   (branch target)
+        // addr 5:   read PC → mem[102]       (should see PC = 6)
+        //
+        // The sequencer may have prefetched addr 2 while execute was
+        // processing the jump at addr 0. The branch must discard that
+        // prefetch and restart from addr 4.
+        let program = vec![
+            // addr 0-1: unconditional jump to addr 4
+            instr()
+                .src(Unit::UNIT_ABS_OPERAND)
+                .soperand(4)
+                .dst(Unit::UNIT_PC),
+            // addr 2: should be skipped
+            instr()
+                .src(Unit::UNIT_ABS_OPERAND)
+                .soperand(0xBAD)
+                .dst(Unit::UNIT_MEMORY_IMMEDIATE)
+                .di(100),
+            // addr 4: should be skipped (addr 3 is the operand of addr 2)
+            // Actually addr 2 is opcode, addr 3 is operand. addr 4:
+            instr()
+                .src(Unit::UNIT_ABS_OPERAND)
+                .soperand(0x600D)
+                .dst(Unit::UNIT_MEMORY_IMMEDIATE)
+                .di(100),
+            // addr 6: read PC to verify we're at the right place
+            instr()
+                .src(Unit::UNIT_PC)
+                .dst(Unit::UNIT_MEMORY_IMMEDIATE)
+                .di(102),
+        ];
+
+        let mut machine_code = Vec::new();
+        for instr in program {
+            machine_code.extend(instr.assemble());
+        }
+        helper.load_instructions(&machine_code, 0);
+        helper.run_until_reset_released(&mut tta).unwrap();
+        helper.run_for_cycles(&mut tta, 200);
+
+        let mem100 = helper.get_data_memory(100);
+        let mem102 = helper.get_data_memory(102);
+
+        prop_assert_eq!(mem100, 0x600D,
+            "Branch target at addr 4 should execute, not the skipped addr 2");
+        // PC read at addr 6 (1-word instruction) should return 7
+        prop_assert_eq!(mem102, 7,
+            "PC after branch should reflect correct execution address");
     }
 
     /// Property: UNIT_NONE as both src and dst is a no-op that completes
