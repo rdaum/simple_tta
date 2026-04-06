@@ -345,7 +345,7 @@ impl Emitter {
                     } else {
                         self.output.push(
                             instr()
-                                .src_mem_op(*addr, crate::AccessWidth::Word, 0)
+                                .src_mem_op(*addr, crate::assembler::AccessWidth::Word, 0)
                                 .dst(Unit::UNIT_REGISTER).di(reg),
                         );
                     }
@@ -411,7 +411,7 @@ impl Emitter {
                         self.output.push(
                             instr()
                                 .src(Unit::UNIT_REGISTER).si(reg)
-                                .dst_mem_op(*addr, crate::AccessWidth::Word, 0),
+                                .dst_mem_op(*addr, crate::assembler::AccessWidth::Word, 0),
                         );
                     }
                 }

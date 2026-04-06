@@ -6,29 +6,29 @@ use marlin::{
 };
 
 // Define our TTA testbench module (includes all dependencies)
-#[verilog(src = "tta_tb.sv", name = "tta_tb")]
+#[verilog(src = "../../tta_tb.sv", name = "tta_tb")]
 pub struct TtaTestbench;
 
 // Define the SoC-style simulation top with boot ROM and external SRAM.
-#[verilog(src = "simtop.sv", name = "simtop")]
+#[verilog(src = "../../simtop.sv", name = "simtop")]
 pub struct SimTop;
 
 pub fn create_tta_runtime() -> Result<VerilatorRuntime> {
-    let include_paths = [Utf8Path::new("rtl"), Utf8Path::new(".")];
+    let include_paths = [Utf8Path::new("../../rtl"), Utf8Path::new("../../")];
     let src_files = [
-        Utf8Path::new("tta_tb.sv"),
-        Utf8Path::new("rtl/tta.sv"),
-        Utf8Path::new("rtl/sequencer.sv"),
-        Utf8Path::new("rtl/decoder.sv"),
-        Utf8Path::new("rtl/execute.sv"),
-        Utf8Path::new("rtl/register_unit.sv"),
-        Utf8Path::new("rtl/alu_unit.sv"),
-        Utf8Path::new("rtl/stack_unit.sv"),
-        Utf8Path::new("rtl/barrier_unit.sv"),
+        Utf8Path::new("../../tta_tb.sv"),
+        Utf8Path::new("../../rtl/tta.sv"),
+        Utf8Path::new("../../rtl/sequencer.sv"),
+        Utf8Path::new("../../rtl/decoder.sv"),
+        Utf8Path::new("../../rtl/execute.sv"),
+        Utf8Path::new("../../rtl/register_unit.sv"),
+        Utf8Path::new("../../rtl/alu_unit.sv"),
+        Utf8Path::new("../../rtl/stack_unit.sv"),
+        Utf8Path::new("../../rtl/barrier_unit.sv"),
     ];
 
     VerilatorRuntime::new(
-        Utf8Path::new("artifacts"),
+        Utf8Path::new("../../artifacts"),
         &src_files,
         &include_paths,
         [],
@@ -38,22 +38,22 @@ pub fn create_tta_runtime() -> Result<VerilatorRuntime> {
 }
 
 pub fn create_simtop_runtime() -> Result<VerilatorRuntime> {
-    let include_paths = [Utf8Path::new("rtl"), Utf8Path::new(".")];
+    let include_paths = [Utf8Path::new("../../rtl"), Utf8Path::new("../../")];
     let src_files = [
-        Utf8Path::new("simtop.sv"),
-        Utf8Path::new("rtl/tta.sv"),
-        Utf8Path::new("rtl/sequencer.sv"),
-        Utf8Path::new("rtl/decoder.sv"),
-        Utf8Path::new("rtl/execute.sv"),
-        Utf8Path::new("rtl/register_unit.sv"),
-        Utf8Path::new("rtl/alu_unit.sv"),
-        Utf8Path::new("rtl/stack_unit.sv"),
-        Utf8Path::new("rtl/barrier_unit.sv"),
-        Utf8Path::new("rtl/blkram.sv"),
+        Utf8Path::new("../../simtop.sv"),
+        Utf8Path::new("../../rtl/tta.sv"),
+        Utf8Path::new("../../rtl/sequencer.sv"),
+        Utf8Path::new("../../rtl/decoder.sv"),
+        Utf8Path::new("../../rtl/execute.sv"),
+        Utf8Path::new("../../rtl/register_unit.sv"),
+        Utf8Path::new("../../rtl/alu_unit.sv"),
+        Utf8Path::new("../../rtl/stack_unit.sv"),
+        Utf8Path::new("../../rtl/barrier_unit.sv"),
+        Utf8Path::new("../../rtl/blkram.sv"),
     ];
 
     VerilatorRuntime::new(
-        Utf8Path::new("artifacts"),
+        Utf8Path::new("../../artifacts"),
         &src_files,
         &include_paths,
         [],
