@@ -58,7 +58,7 @@ destination require an extended operand.
 | `ALU_RESULT` | Read ALU lane N result | -- |
 | `MEMORY_IMMEDIATE` | Load from 12-bit address | Store to 12-bit address |
 | `MEMORY_OPERAND` | Load from 32-bit address (next word) | Store to 32-bit address |
-| `REGISTER_POINTER` | Load from address in register N | Store to address in register N |
+| *(13 reserved)* | | |
 | `ABS_IMMEDIATE` | Literal 12-bit value | -- |
 | `ABS_OPERAND` | Literal 32-bit value (next word) | -- |
 | `PC` | Read program counter | Jump (set program counter) |
@@ -158,7 +158,7 @@ HANDLER → pc_cond                    ; branch on type
 
 ### Sub-word memory access
 
-`MEMORY_OPERAND` and `REGISTER_POINTER` support byte and halfword
+`MEMORY_OPERAND` supports byte and halfword
 loads/stores. The 12-bit immediate field encodes the access width
 and byte offset:
 
