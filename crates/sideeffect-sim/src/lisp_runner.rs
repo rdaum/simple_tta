@@ -46,6 +46,10 @@ struct PersistentSim<'a> {
     tta: TtaTestbench<'a>,
     instruction_memory: HashMap<u32, u32>,
     data_memory: HashMap<u32, u64>,
+    /// Next free address for loading user code.
+    next_code_addr: u32,
+    /// Known global function definitions with absolute addresses.
+    globals: Vec<sideeffect_lisp::compiler::GlobalDef>,
     cycle_count: u32,
 }
 
@@ -72,6 +76,8 @@ impl<'a> PersistentSim<'a> {
             tta,
             instruction_memory,
             data_memory,
+            next_code_addr: 2, // boot jump at 0-1, user code starts at 2
+            globals: Vec::new(),
             cycle_count: 0,
         };
 
@@ -128,16 +134,14 @@ impl<'a> PersistentSim<'a> {
     /// Load compiled code at the next free address and send the entry
     /// address via mailbox. Runs until the CPU writes the result back
     /// to the mailbox output. Returns (value, tag, cycles).
-    fn run_code(&mut self, code: &[u32]) -> Result<(u32, u8, u32), String> {
-        // Always load user code starting at address 0.
-        // The boot loop jump at addr 0-1 gets overwritten — that's fine,
-        // it only runs once at startup. The boot loop itself is at BOOT_ADDR.
+    fn run_code(&mut self, code: &[u32], base: u32) -> Result<(u32, u8, u32), String> {
+        // Load code at the given base address.
         for (i, &word) in code.iter().enumerate() {
-            self.instruction_memory.insert(i as u32, word);
+            self.instruction_memory.insert(base + i as u32, word);
         }
 
-        // Send entry address (0) via mailbox
-        self.tta.mailbox_data_i = 0;
+        // Send entry address via mailbox
+        self.tta.mailbox_data_i = base as u64;
         self.tta.mailbox_valid_i = 1;
 
         // Step until ack
@@ -169,10 +173,15 @@ impl<'a> PersistentSim<'a> {
     }
 }
 
-/// Compile a Lisp expression to TTA code (without boot loop or result store —
-/// the boot loop handles calling and result collection).
-fn compile_function(source: &str) -> Result<(Vec<u32>, String), String> {
-    let prog = sideeffect_lisp::compile(source).map_err(|e| e.to_string())?;
+/// Compile a Lisp expression to TTA code with pre-existing globals.
+/// The code will be loaded at `base_addr` in instruction memory.
+fn compile_function(
+    source: &str,
+    globals: &[sideeffect_lisp::GlobalDef],
+    base_addr: u32,
+) -> Result<(Vec<u32>, String, Vec<sideeffect_lisp::GlobalDef>), String> {
+    let prog = sideeffect_lisp::compile_with_globals(source, globals, base_addr)
+        .map_err(|e| e.to_string())?;
     let mut code = prog.code;
     // The compiler emits a trailing halt (none→none). Replace it with a return:
     // pop stack[1] → PC (return to boot loop)
@@ -180,7 +189,7 @@ fn compile_function(source: &str) -> Result<(Vec<u32>, String), String> {
     code.extend(instr().src(Unit::UNIT_STACK_PUSH_POP).si(1).dst(Unit::UNIT_PC).assemble());
 
     let disasm = sideeffect_asm::disassemble_to_string(&code);
-    Ok((code, disasm))
+    Ok((code, disasm, prog.globals))
 }
 
 /// Ensure CWD is `crates/sideeffect-sim/` so the simulator's relative
@@ -229,11 +238,12 @@ fn main() {
     if args.len() > 1 {
         let source = args[1..].join(" ");
         let mut sim = PersistentSim::new(&runtime);
-        match compile_function(&source) {
-            Ok((code, disasm)) => {
+        let base = sim.next_code_addr;
+        match compile_function(&source, &sim.globals, base) {
+            Ok((code, disasm, _globals)) => {
                 let words = code.len();
                 eprint!("{}", disasm);
-                match sim.run_code(&code) {
+                match sim.run_code(&code, base) {
                     Ok((value, tag, cycles)) => {
                         println!("{}", format_result(value, tag));
                         eprintln!("({} cycles, {} words)", cycles, words);
@@ -259,7 +269,6 @@ fn main() {
     };
 
     let mut sim = PersistentSim::new(&runtime);
-    let mut accumulated_defines = Vec::<String>::new();
 
     println!("sideeffect lisp — type expressions, Ctrl-D to exit");
     println!("Hardware: 36-bit tagged TTA, Verilator simulation");
@@ -288,35 +297,22 @@ fn main() {
             }
         };
 
-        let is_define = line.trim_start().starts_with("(define ");
-
-        let mut full_source = String::new();
-        let needs_begin = !accumulated_defines.is_empty() || is_define;
-
-        if needs_begin {
-            full_source.push_str("(begin\n");
-            for def in &accumulated_defines {
-                full_source.push_str("  ");
-                full_source.push_str(def);
-                full_source.push('\n');
-            }
-            full_source.push_str("  ");
-            full_source.push_str(&line);
-            full_source.push_str("\n)");
-        } else {
-            full_source = line.clone();
-        }
-
-        match compile_function(&full_source) {
-            Ok((code, disasm)) => {
+        let base = sim.next_code_addr;
+        match compile_function(&line, &sim.globals, base) {
+            Ok((code, disasm, new_globals)) => {
                 let words = code.len();
                 eprint!("{}", disasm);
-                match sim.run_code(&code) {
+                match sim.run_code(&code, base) {
                     Ok((value, tag, cycles)) => {
                         println!("=> {}", format_result(value, tag));
                         eprintln!("   ({} cycles, {} words)", cycles, words);
-                        if is_define {
-                            accumulated_defines.push(line);
+                        // Advance code address past what we just loaded
+                        sim.next_code_addr = base + code.len() as u32;
+                        // Record any new globals (with absolute addresses)
+                        for g in &new_globals {
+                            if !g.preexisting {
+                                sim.globals.push(g.clone());
+                            }
                         }
                     }
                     Err(e) => eprintln!("runtime error: {}", e),

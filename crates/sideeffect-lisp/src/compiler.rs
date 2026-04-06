@@ -41,13 +41,16 @@ impl Env {
 
 /// Top-level definitions: maps global names to instruction addresses.
 #[derive(Debug, Clone)]
-struct GlobalDef {
-    name: String,
+pub struct GlobalDef {
+    pub name: String,
     /// Word address in instruction memory where the function body starts.
-    addr: u32,
+    pub addr: u32,
     /// Number of parameters.
-    #[allow(dead_code)]
-    arity: usize,
+    pub arity: usize,
+    /// Whether this global was pre-existing (loaded from a prior compilation).
+    /// Pre-existing globals are not re-emitted — their code is already in
+    /// instruction memory at `addr`.
+    pub preexisting: bool,
 }
 
 /// Compilation output: instruction words + metadata.
@@ -57,6 +60,9 @@ pub struct Program {
     pub code: Vec<u32>,
     /// Address of the entry point (main/top-level code).
     pub entry: u32,
+    /// Global definitions emitted during this compilation.
+    /// Includes both newly defined and pre-existing globals.
+    pub globals: Vec<GlobalDef>,
 }
 
 /// Compiler state.
@@ -67,6 +73,9 @@ struct Compiler {
     env: Env,
     /// Global function definitions.
     globals: Vec<GlobalDef>,
+    /// Base address where this code will be loaded in instruction memory.
+    /// All internal addresses are offset by this value.
+    base_addr: u32,
     /// Pending forward references (reserved for future use).
     #[allow(dead_code)]
     patches: Vec<(usize, String)>,
@@ -81,13 +90,14 @@ impl Compiler {
             code: Vec::new(),
             env: Env::new(),
             globals: Vec::new(),
+            base_addr: 0,
             patches: Vec::new(),
             label_counter: 0,
         }
     }
 
     fn current_addr(&self) -> u32 {
-        self.code.len() as u32
+        self.base_addr + self.code.len() as u32
     }
 
     #[allow(dead_code)]
@@ -448,6 +458,7 @@ impl Compiler {
                     name: name.clone(),
                     addr: func_addr,
                     arity,
+                    preexisting: false,
                 });
 
                 // Function prologue: allocate frame, pop args from eval stack
@@ -902,19 +913,41 @@ fn symbol_index(name: &str) -> u32 {
 
 /// Compile a Lisp program (source string) to TTA machine code.
 pub fn compile(source: &str) -> Result<Program, String> {
+    compile_with_globals(source, &[], 0)
+}
+
+/// Compile with pre-existing global definitions and a base address.
+///
+/// Pre-existing globals are not re-emitted — their code is already
+/// resident in instruction memory at their recorded addresses. Calls
+/// to them emit direct jumps to those absolute addresses.
+///
+/// `base_addr` is the instruction memory address where the compiled
+/// code will be loaded. All internal branch targets and newly defined
+/// function addresses are offset by this value so they resolve correctly.
+pub fn compile_with_globals(
+    source: &str,
+    existing_globals: &[GlobalDef],
+    base_addr: u32,
+) -> Result<Program, String> {
     let ast = crate::parser::parse(source)?;
     let mut compiler = Compiler::new();
+    compiler.base_addr = base_addr;
 
-    // First pass: collect top-level defines.
-    // We need to do this in order, since defines produce code inline.
+    // Register pre-existing globals so the compiler can reference them.
+    for g in existing_globals {
+        compiler.globals.push(g.clone());
+    }
+
     compiler.compile_expr(&ast, false);
 
     // Emit halt (none → none)
     compiler.emit(&instr());
 
     Ok(Program {
-        entry: 0,
+        entry: base_addr,
         code: compiler.code,
+        globals: compiler.globals,
     })
 }
 
