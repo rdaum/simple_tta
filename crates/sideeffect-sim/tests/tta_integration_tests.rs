@@ -3040,4 +3040,146 @@ mod tests {
             "Else path should be skipped");
         Ok(())
     }
+
+    #[test]
+    fn test_byte_write_and_read() -> Result<(), Box<dyn std::error::Error>> {
+        let runtime = create_runtime()?;
+        let mut tta = runtime
+            .create_model_simple::<TtaTestbench>()
+            .map_err(|e| format!("Failed to create model: {:?}", e))?;
+        let mut helper = TtaTestHelper::new();
+
+        tta.rst_i = 1;
+        tta.clk_i = 0;
+        tta.instr_ready_i = 0;
+        tta.data_ready_i = 0;
+        tta.instr_data_read_i = 0;
+        tta.data_data_read_i = 0;
+
+        // Write 0xAA to byte 1 of word at address 50, then read it back
+        helper.set_data_memory(50, 0x00000000);
+        let program = vec![
+            // Write byte: 0xAA → mem[50], byte offset 1
+            instr()
+                .src(Unit::UNIT_ABS_IMMEDIATE).si(0xAA)
+                .dst_mem_byte(50, 1),
+            // Read byte back: mem[50], byte offset 1 → r0
+            instr()
+                .src_mem_byte(50, 1)
+                .dst(Unit::UNIT_REGISTER).di(0),
+            // Store r0 → mem[100] for verification
+            instr()
+                .src(Unit::UNIT_REGISTER).si(0)
+                .dst(Unit::UNIT_MEMORY_IMMEDIATE).di(100),
+        ];
+
+        let mut machine_code = Vec::new();
+        for i in &program {
+            machine_code.extend(i.assemble());
+        }
+        helper.load_instructions(&machine_code, 0);
+        helper.run_until_reset_released(&mut tta)?;
+        helper.run_for_cycles(&mut tta, 200);
+
+        assert_eq!(helper.get_data_memory(50), 0x0000AA00,
+            "Byte 1 of word should be 0xAA");
+        assert_eq!(helper.get_data_memory(100), 0xAA,
+            "Byte read should return zero-extended byte value");
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_stack_pop_tag_and_value_modes() -> Result<(), Box<dyn std::error::Error>> {
+        let runtime = create_runtime()?;
+        let mut tta = runtime
+            .create_model_simple::<TtaTestbench>()
+            .map_err(|e| format!("Failed to create model: {:?}", e))?;
+        let mut helper = TtaTestHelper::new();
+
+        tta.rst_i = 1;
+        tta.clk_i = 0;
+        tta.instr_ready_i = 0;
+        tta.data_ready_i = 0;
+        tta.instr_data_read_i = 0;
+        tta.data_data_read_i = 0;
+
+        // Push a tagged value (0x15 = addr 0x14 | tag 1) onto stack 0 three times.
+        // Pop RAW, pop VALUE, pop TAG — verify each.
+        let tagged_val: u32 = 0x14 | 1; // addr 20 | tag 1
+        let program = vec![
+            instr().push_immediate(0, tagged_val),
+            instr().push_immediate(0, tagged_val),
+            instr().push_immediate(0, tagged_val),
+            // Pop RAW → r0
+            instr().src_pop(0).dst(Unit::UNIT_REGISTER).di(0),
+            // Pop VALUE → r1 (tag zeroed)
+            instr().src_pop_value(0).dst(Unit::UNIT_REGISTER).di(1),
+            // Pop TAG → r2 (tag only)
+            instr().src_pop_tag(0).dst(Unit::UNIT_REGISTER).di(2),
+            // Store results
+            instr().src(Unit::UNIT_REGISTER).si(0).dst(Unit::UNIT_MEMORY_IMMEDIATE).di(100),
+            instr().src(Unit::UNIT_REGISTER).si(1).dst(Unit::UNIT_MEMORY_IMMEDIATE).di(101),
+            instr().src(Unit::UNIT_REGISTER).si(2).dst(Unit::UNIT_MEMORY_IMMEDIATE).di(102),
+        ];
+
+        let mut machine_code = Vec::new();
+        for i in &program {
+            machine_code.extend(i.assemble());
+        }
+        helper.load_instructions(&machine_code, 0);
+        helper.run_until_reset_released(&mut tta)?;
+        helper.run_for_cycles(&mut tta, 300);
+
+        assert_eq!(helper.get_data_memory(100), tagged_val, "RAW pop should return full value");
+        assert_eq!(helper.get_data_memory(101), tagged_val & !3, "VALUE pop should zero tag bits");
+        assert_eq!(helper.get_data_memory(102), tagged_val & 3, "TAG pop should return tag bits only");
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_stack_peek_tag_mode() -> Result<(), Box<dyn std::error::Error>> {
+        let runtime = create_runtime()?;
+        let mut tta = runtime
+            .create_model_simple::<TtaTestbench>()
+            .map_err(|e| format!("Failed to create model: {:?}", e))?;
+        let mut helper = TtaTestHelper::new();
+
+        tta.rst_i = 1;
+        tta.clk_i = 0;
+        tta.instr_ready_i = 0;
+        tta.data_ready_i = 0;
+        tta.instr_data_read_i = 0;
+        tta.data_data_read_i = 0;
+
+        let tagged_val: u32 = 0x14 | 2; // addr 20 | tag 2
+        let program = vec![
+            instr().push_immediate(0, tagged_val),
+            // Peek TAG at offset 0 → cond
+            instr().src_peek_tag(0, 0).dst(Unit::UNIT_COND),
+            // Read cond → r0
+            instr().src(Unit::UNIT_COND).dst(Unit::UNIT_REGISTER).di(0),
+            // Peek VALUE at offset 0 → r1
+            instr().src_peek_value(0, 0).dst(Unit::UNIT_REGISTER).di(1),
+            // Store results
+            instr().src(Unit::UNIT_REGISTER).si(0).dst(Unit::UNIT_MEMORY_IMMEDIATE).di(100),
+            instr().src(Unit::UNIT_REGISTER).si(1).dst(Unit::UNIT_MEMORY_IMMEDIATE).di(101),
+        ];
+
+        let mut machine_code = Vec::new();
+        for i in &program {
+            machine_code.extend(i.assemble());
+        }
+        helper.load_instructions(&machine_code, 0);
+        helper.run_until_reset_released(&mut tta)?;
+        helper.run_for_cycles(&mut tta, 300);
+
+        // Tag is 2 (nonzero), so cond should be 1
+        assert_eq!(helper.get_data_memory(100), 1, "TAG peek should set cond (tag=2 is nonzero)");
+        // VALUE should be addr with tag zeroed
+        assert_eq!(helper.get_data_memory(101), 0x14, "VALUE peek should zero tag bits");
+
+        Ok(())
+    }
 }

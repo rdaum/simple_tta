@@ -66,7 +66,12 @@ typedef enum bit[4:0] {
     UNIT_PC               = 15,  // Program counter (source: read; dest: jump)
     UNIT_PC_COND          = 16,  // Destination only: jump if condition register is set
     UNIT_COND             = 17,  // Source: read condition (0 or 1); Dest: set condition
-    UNIT_WRITE_BARRIER    = 18   // Source: pop barrier FIFO; Dest: push to barrier FIFO
+    UNIT_WRITE_BARRIER    = 18,  // Source: pop barrier FIFO; Dest: push to barrier FIFO
+    UNIT_MEM_BYTE         = 19,  // Byte load/store; 32-bit address in operand, imm[1:0] = byte offset
+    UNIT_STACK_POP_VALUE  = 20,  // Pop with VALUE mode (tag bits zeroed)
+    UNIT_STACK_POP_TAG    = 21,  // Pop with TAG mode (tag bits only)
+    UNIT_STACK_PEEK_VALUE = 22,  // Peek with VALUE mode (tag bits zeroed)
+    UNIT_STACK_PEEK_TAG   = 23   // Peek with TAG mode (tag bits only)
 } Unit;
 
 // Predicate flag bit positions within the 6-bit flags field.

@@ -53,11 +53,19 @@ pub enum Unit {
     UNIT_PC_COND = 16,
     UNIT_COND = 17,
     UNIT_WRITE_BARRIER = 18,
+    UNIT_MEM_BYTE = 19,         // byte load/store; 32-bit addr in operand, imm[1:0] = byte offset
+    UNIT_STACK_POP_VALUE = 20,  // pop with VALUE mode (tag bits zeroed)
+    UNIT_STACK_POP_TAG = 21,    // pop with TAG mode (tag bits only)
+    UNIT_STACK_PEEK_VALUE = 22, // peek with VALUE mode (tag bits zeroed)
+    UNIT_STACK_PEEK_TAG = 23,   // peek with TAG mode (tag bits only)
 }
 
 impl Unit {
     fn needs_operand(self) -> bool {
-        matches!(self, Unit::UNIT_MEMORY_OPERAND | Unit::UNIT_ABS_OPERAND)
+        matches!(
+            self,
+            Unit::UNIT_MEMORY_OPERAND | Unit::UNIT_ABS_OPERAND | Unit::UNIT_MEM_BYTE
+        )
     }
 }
 
@@ -344,6 +352,60 @@ impl Instr {
         self.dst_unit = Unit::UNIT_MEMORY_OPERAND;
         self.di = 0;
         self.doperand = Some(addr);
+        self
+    }
+
+    /// Set source to a byte load (32-bit address, imm[1:0] = byte offset).
+    pub fn src_mem_byte(mut self, addr: u32, byte_offset: u8) -> Self {
+        assert!(byte_offset < 4, "Byte offset must be 0-3");
+        self.src_unit = Unit::UNIT_MEM_BYTE;
+        self.si = byte_offset & 0x3;
+        self.soperand = Some(addr);
+        self
+    }
+
+    /// Set destination to a byte store (32-bit address, imm[1:0] = byte offset).
+    pub fn dst_mem_byte(mut self, addr: u32, byte_offset: u8) -> Self {
+        assert!(byte_offset < 4, "Byte offset must be 0-3");
+        self.dst_unit = Unit::UNIT_MEM_BYTE;
+        self.di = byte_offset & 0x3;
+        self.doperand = Some(addr);
+        self
+    }
+
+    // --- Tagged stack access helpers ---
+
+    /// Pop with VALUE mode (tag bits zeroed).
+    pub fn src_pop_value(mut self, stack_id: u8) -> Self {
+        assert!(stack_id < 8, "Stack ID must be 0-7");
+        self.src_unit = Unit::UNIT_STACK_POP_VALUE;
+        self.si = stack_id;
+        self
+    }
+
+    /// Pop with TAG mode (tag bits only).
+    pub fn src_pop_tag(mut self, stack_id: u8) -> Self {
+        assert!(stack_id < 8, "Stack ID must be 0-7");
+        self.src_unit = Unit::UNIT_STACK_POP_TAG;
+        self.si = stack_id;
+        self
+    }
+
+    /// Peek with VALUE mode (tag bits zeroed).
+    pub fn src_peek_value(mut self, stack_id: u8, offset: u8) -> Self {
+        assert!(stack_id < 8, "Stack ID must be 0-7");
+        assert!(offset < 32, "Stack offset must be 0-31");
+        self.src_unit = Unit::UNIT_STACK_PEEK_VALUE;
+        self.si = stack_id | (offset << 3);
+        self
+    }
+
+    /// Peek with TAG mode (tag bits only).
+    pub fn src_peek_tag(mut self, stack_id: u8, offset: u8) -> Self {
+        assert!(stack_id < 8, "Stack ID must be 0-7");
+        assert!(offset < 32, "Stack offset must be 0-31");
+        self.src_unit = Unit::UNIT_STACK_PEEK_TAG;
+        self.si = stack_id | (offset << 3);
         self
     }
 }

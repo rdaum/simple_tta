@@ -186,6 +186,15 @@ module execute #(
   // 1-bit condition register for conditional branches.
   logic cond_reg;
 
+  // Byte access: when reading via UNIT_MEM_BYTE, the byte offset is
+  // latched here so the retrieve state can extract the correct byte.
+  logic [1:0] src_byte_offset;
+  logic       src_is_byte;
+
+  // Stack tag mode for tagged pop/peek units.
+  // 0 = RAW, 1 = VALUE, 2 = TAG
+  logic [1:0] src_stack_tag_mode;
+
   // Predication: check flags against condition register.
   wire pred_if_set   = flags_i[PRED_IF_SET];
   wire pred_if_clear = flags_i[PRED_IF_CLEAR];
@@ -218,6 +227,11 @@ module execute #(
       muldiv_oper <= 4'h0;
       muldiv_a <= 32'b0;
       muldiv_b <= 32'b0;
+
+      // Initialize byte/stack tag state
+      src_byte_offset <= 2'b0;
+      src_is_byte <= 1'b0;
+      src_stack_tag_mode <= 2'b0;
 
       // Initialize execution state
       exec_state <= EXEC_START_SRC;
@@ -288,6 +302,7 @@ module execute #(
                 default:               data_addr_o <= 32'b0;
               endcase
               data_valid_o <= 1'b1;
+              src_is_byte <= 1'b0;
               exec_state <= EXEC_SRC_MEM_RETRIEVE;
             end
             UNIT_REGISTER: begin
@@ -310,6 +325,7 @@ module execute #(
               data_addr_o <= (reg_raw_data[src_immediate_i[4:0]] & ~TAG_MASK_32)
                              + {29'b0, src_immediate_i[7:5]};
               data_valid_o <= 1'b1;
+              src_is_byte <= 1'b0;
               exec_state <= EXEC_SRC_MEM_RETRIEVE;
             end
             UNIT_ALU_LEFT: begin
@@ -359,6 +375,7 @@ module execute #(
               stack_select <= src_immediate_i[2:0];
               stack_pop <= 1'b1;
               stack_wait_armed <= 1'b0;
+              src_stack_tag_mode <= 2'b00; // RAW
               exec_state <= EXEC_SRC_STACK_WAIT;
             end
             UNIT_STACK_INDEX: begin
@@ -366,12 +383,51 @@ module execute #(
               stack_offset <= src_immediate_i[7:3];
               stack_index_read <= 1'b1;
               stack_wait_armed <= 1'b0;
+              src_stack_tag_mode <= 2'b00; // RAW
               exec_state <= EXEC_SRC_STACK_WAIT;
             end
             UNIT_WRITE_BARRIER: begin
               barrier_pop <= 1'b1;
               stack_wait_armed <= 1'b0;
               exec_state <= EXEC_SRC_BARRIER_WAIT;
+            end
+            UNIT_MEM_BYTE: begin
+              // Byte load: 32-bit address from operand, byte offset from imm[1:0]
+              data_addr_o <= src_operand_i;
+              data_valid_o <= 1'b1;
+              src_byte_offset <= src_immediate_i[1:0];
+              src_is_byte <= 1'b1;
+              exec_state <= EXEC_SRC_MEM_RETRIEVE;
+            end
+            UNIT_STACK_POP_VALUE: begin
+              stack_select <= src_immediate_i[2:0];
+              stack_pop <= 1'b1;
+              stack_wait_armed <= 1'b0;
+              src_stack_tag_mode <= 2'b01; // VALUE
+              exec_state <= EXEC_SRC_STACK_WAIT;
+            end
+            UNIT_STACK_POP_TAG: begin
+              stack_select <= src_immediate_i[2:0];
+              stack_pop <= 1'b1;
+              stack_wait_armed <= 1'b0;
+              src_stack_tag_mode <= 2'b10; // TAG
+              exec_state <= EXEC_SRC_STACK_WAIT;
+            end
+            UNIT_STACK_PEEK_VALUE: begin
+              stack_select <= src_immediate_i[2:0];
+              stack_offset <= src_immediate_i[7:3];
+              stack_index_read <= 1'b1;
+              stack_wait_armed <= 1'b0;
+              src_stack_tag_mode <= 2'b01; // VALUE
+              exec_state <= EXEC_SRC_STACK_WAIT;
+            end
+            UNIT_STACK_PEEK_TAG: begin
+              stack_select <= src_immediate_i[2:0];
+              stack_offset <= src_immediate_i[7:3];
+              stack_index_read <= 1'b1;
+              stack_wait_armed <= 1'b0;
+              src_stack_tag_mode <= 2'b10; // TAG
+              exec_state <= EXEC_SRC_STACK_WAIT;
             end
             UNIT_NONE: begin
               resolved_src = 32'b0;
@@ -473,7 +529,14 @@ module execute #(
         end
         EXEC_SRC_MEM_RETRIEVE: begin
           if (data_ready_i) begin
-            src_value <= data_read_data_i;
+            if (src_is_byte) begin
+              /* verilator lint_off UNUSEDSIGNAL */
+              reg [31:0] shifted;
+              /* verilator lint_on UNUSEDSIGNAL */
+              shifted = data_read_data_i >> (src_byte_offset * 8);
+              src_value <= {24'b0, shifted[7:0]};
+            end else
+              src_value <= data_read_data_i;
             data_valid_o <= 1'b0;
             exec_state <= EXEC_START_DST;
           end
@@ -487,7 +550,11 @@ module execute #(
           if (!stack_wait_armed) begin
             stack_wait_armed <= 1'b1;
           end else if (stack_ready) begin
-            src_value <= stack_data_out;
+            case (src_stack_tag_mode)
+              2'b01:   src_value <= stack_data_out & ~TAG_MASK_32; // VALUE
+              2'b10:   src_value <= stack_data_out & TAG_MASK_32;  // TAG
+              default: src_value <= stack_data_out;                // RAW
+            endcase
             stack_wait_armed <= 1'b0;
             exec_state <= EXEC_START_DST;
           end
@@ -568,6 +635,15 @@ module execute #(
               data_valid_o <= 1'b1;
               data_write_data_o <= src_value;
               data_wstrb_o <= 4'b1111;
+              done_o <= 1'b1;
+              exec_state <= EXEC_START_SRC;
+            end
+            UNIT_MEM_BYTE: begin
+              // Byte store: 32-bit address from operand, byte offset from imm[1:0]
+              data_addr_o <= dst_operand_i;
+              data_valid_o <= 1'b1;
+              data_write_data_o <= src_value << (dst_immediate_i[1:0] * 8);
+              data_wstrb_o <= 4'b0001 << dst_immediate_i[1:0];
               done_o <= 1'b1;
               exec_state <= EXEC_START_SRC;
             end

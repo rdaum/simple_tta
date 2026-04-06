@@ -130,12 +130,16 @@ module sequencer (
   /* verilator lint_off UNUSEDSIGNAL */
   function automatic needs_src_op;
     input [31:0] raw_op;
-    needs_src_op = (raw_op[4:0] == UNIT_MEMORY_OPERAND) || (raw_op[4:0] == UNIT_ABS_OPERAND);
+    needs_src_op = (raw_op[4:0] == UNIT_MEMORY_OPERAND)
+                || (raw_op[4:0] == UNIT_ABS_OPERAND)
+                || (raw_op[4:0] == UNIT_MEM_BYTE);
   endfunction
 
   function automatic needs_dst_op;
     input [31:0] raw_op;
-    needs_dst_op = (raw_op[9:5] == UNIT_MEMORY_OPERAND) || (raw_op[9:5] == UNIT_ABS_OPERAND);
+    needs_dst_op = (raw_op[9:5] == UNIT_MEMORY_OPERAND)
+                || (raw_op[9:5] == UNIT_ABS_OPERAND)
+                || (raw_op[9:5] == UNIT_MEM_BYTE);
   endfunction
 
   function automatic is_control_flow;
