@@ -27,7 +27,8 @@ module execute (
     bus_if.master data_bus,             // Data memory bus (loads and stores)
     output logic [31:0] pc_write_o,     // PC value for jumps (to sequencer)
     output logic        pc_write_en_o,  // High to override PC (jump taken)
-    output logic done_o                 // Pulses high when the move is complete
+    output logic done_o,                // Pulses high when the move is complete
+    output wire  busy_o                 // High while execute is processing
 );
   // Architectural register file: 32 independent 32-bit cells.
   logic reg_unit_select[`NUM_REGISTERS-1:0];
@@ -106,6 +107,7 @@ module execute (
   // the sequencer to pulse sel_i for one cycle and move on to prefetch
   // while execute continues processing multi-cycle operations.
   logic exec_active;
+  assign busy_o = exec_active;
   logic stack_wait_armed;
 
   // 1-bit condition register for conditional branches.

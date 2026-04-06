@@ -1,13 +1,14 @@
 `include "common.vh"
-// Top-level TTA core. Three pipeline-ish stages cooperate in lock-step:
+// Top-level TTA core. Three stages cooperate:
 //
-//   sequencer  — fetches opcode + optional operand words from instr_bus
-//   decoder    — splits the opcode into source/destination unit + immediates
+//   sequencer  — prefetches opcode + operand words from instr_bus
+//   decoder    — combinational: splits opcode into unit + immediates
 //   execute    — reads the source, writes the destination via data_bus
 //
-// All addresses are *word*-addressed (each address increment = one 32-bit
-// word). The sequencer and execute stages handshake through done signals
-// so that the next fetch does not begin until the current move completes.
+// The sequencer runs the bus fetch independently of execute, so the next
+// instruction's opcode read overlaps with the current instruction's
+// execution. This hides bus latency for sequential (non-branch) code.
+// All addresses are *word*-addressed.
 module tta (
     input wire rst_i,           // Synchronous reset (active high)
     input wire clk_i,           // System clock
@@ -21,6 +22,7 @@ module tta (
   logic [31:0] dst_operand;
   logic [31:0] op;
   logic done_exec;
+  logic exec_busy;
 
   assign instr_done_o = done_exec;
 
@@ -30,15 +32,13 @@ module tta (
   logic [31:0] pc_write;
   logic        pc_write_en;
 
-  // Hold off the next fetch until the current execute phase has completed.
-  wire  pause_sequencer = sequencer_done && ~done_exec;
   sequencer sequencer (
       .clk_i(clk_i),
       .rst_i(rst_i),
       .instr_bus(instr_bus),
       .pc_o(pc),
       .op_o(op),
-      .sel_i(~pause_sequencer),
+      .exec_busy_i(exec_busy),
       .src_operand_o(src_operand),
       .dst_operand_o(dst_operand),
       .pc_write_i(pc_write),
@@ -72,7 +72,8 @@ module tta (
       .dst_operand_i(dst_operand),
       .pc_write_o(pc_write),
       .pc_write_en_o(pc_write_en),
-      .done_o(done_exec)
+      .done_o(done_exec),
+      .busy_o(exec_busy)
   );
 
 endmodule : tta
