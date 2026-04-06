@@ -51,6 +51,11 @@ module tta (
       .dst_operand_o(dst_operand),
       .pc_write_i(pc_write),
       .pc_write_en_i(pc_write_en)
+`ifdef SEQUENCER_DEBUG
+      ,.dbg_prefetch_valid_o(),
+      .dbg_fetch_state_o(),
+      .dbg_prefetch_op_o()
+`endif
   );
   Unit src_unit;
   Unit dst_unit;
