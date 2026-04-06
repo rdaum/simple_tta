@@ -58,7 +58,7 @@ destination require an extended operand.
 | `ALU_RESULT` | Read ALU lane N result | -- |
 | `MEMORY_IMMEDIATE` | Load from 12-bit address | Store to 12-bit address |
 | `MEMORY_OPERAND` | Load from 32-bit address (next word) | Store to 32-bit address |
-| *(13 reserved)* | | |
+| `WRITE_BARRIER` | Pop barrier FIFO (GC drain) | Push to barrier FIFO (log address) |
 | `ABS_IMMEDIATE` | Literal 12-bit value | -- |
 | `ABS_OPERAND` | Literal 32-bit value (next word) | -- |
 | `PC` | Read program counter | Jump (set program counter) |
@@ -155,6 +155,27 @@ from the stack without an intermediate register:
 peek[stack0, offset0, TAG] → cond   ; check type of TOS
 HANDLER → pc_cond                    ; branch on type
 ```
+
+### Write barrier (hardware GC support)
+
+The `WRITE_BARRIER` unit is a 32-entry hardware FIFO for
+garbage collection support. The mutator logs addresses of
+pointer stores; the GC drains the FIFO to find dirty regions.
+
+```
+src_value → mem[addr]          ; store a pointer (normal)
+addr      → write_barrier      ; log the address for GC
+```
+
+The GC drains the barrier by popping:
+
+```
+write_barrier → reg[0]         ; next dirty address
+```
+
+Combined with tagged registers (TAG mode for type checking,
+DEREF for pointer chasing), this provides the core primitives
+for hardware-assisted GC in e.g. a Lisp or Lua runtime.
 
 ### Sub-word memory access
 

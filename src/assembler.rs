@@ -39,7 +39,7 @@ pub enum Unit {
     UNIT_PC = 10,
     UNIT_ABS_IMMEDIATE = 11,
     UNIT_ABS_OPERAND = 12,
-    // 13 is reserved (was REGISTER_POINTER, use REGISTER DEREF mode instead)
+    UNIT_WRITE_BARRIER = 13,
     UNIT_COND = 14,
     UNIT_PC_COND = 15,
 }

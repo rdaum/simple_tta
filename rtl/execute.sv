@@ -103,6 +103,27 @@ module execute (
       .stack_underflow_o(stack_underflow)
   );
 
+  // Write barrier FIFO for hardware-assisted GC.
+  logic barrier_push, barrier_pop;
+  logic [31:0] barrier_data_in, barrier_data_out;
+  logic barrier_ready;
+  /* verilator lint_off UNUSEDSIGNAL */
+  logic barrier_empty, barrier_full, barrier_overflow;
+  /* verilator lint_on UNUSEDSIGNAL */
+
+  barrier_unit barrier_inst (
+      .clk_i(clk_i),
+      .rst_i(rst_i),
+      .push_i(barrier_push),
+      .data_i(barrier_data_in),
+      .pop_i(barrier_pop),
+      .data_o(barrier_data_out),
+      .ready_o(barrier_ready),
+      .barrier_empty_o(barrier_empty),
+      .barrier_full_o(barrier_full),
+      .barrier_overflow_o(barrier_overflow)
+  );
+
   // Execution FSM: first resolve the source value, then write to destination.
   //
   //  EXEC_START_SRC ──→ (immediate units) ──→ EXEC_START_DST ──→ done
@@ -112,11 +133,13 @@ module execute (
   //                                         │
   //                                         └─→ EXEC_DST_STACK_WAIT ──→ done
   typedef enum {
-    EXEC_START_SRC,       // Begin source resolution (fuses dst for immediate moves)
-    EXEC_SRC_MEM_RETRIEVE,// Wait for data_ready_i on a memory read
-    EXEC_SRC_STACK_WAIT,  // Wait for stack_ready after pop / peek
-    EXEC_START_DST,       // Route src_value to the destination unit
-    EXEC_DST_STACK_WAIT   // Wait for stack_ready after push / poke
+    EXEC_START_SRC,        // Begin source resolution (fuses dst for immediate moves)
+    EXEC_SRC_MEM_RETRIEVE, // Wait for data_ready_i on a memory read
+    EXEC_SRC_STACK_WAIT,   // Wait for stack_ready after pop / peek
+    EXEC_SRC_BARRIER_WAIT, // Wait for barrier_ready after pop
+    EXEC_START_DST,        // Route src_value to the destination unit
+    EXEC_DST_STACK_WAIT,   // Wait for stack_ready after push / poke
+    EXEC_DST_BARRIER_WAIT  // Wait for barrier_ready after push
   } ExecState;
   ExecState exec_state;
   logic [31:0] src_value;
@@ -226,10 +249,13 @@ module execute (
       for (ii = 0; ii < `NUM_ALUS; ii = ii + 1)
         alu_operation[ii] <= 4'h0;
 
-      // Initialize stack signals
+      // Initialize stack and barrier signals
       stack_select <= 3'b000;
       stack_push <= 1'b0;
       stack_pop <= 1'b0;
+      barrier_push <= 1'b0;
+      barrier_pop <= 1'b0;
+      barrier_data_in <= 32'b0;
       stack_offset <= 6'b0;
       stack_index_read <= 1'b0;
       stack_index_write <= 1'b0;
@@ -289,11 +315,13 @@ module execute (
           data_wstrb_o <= 4'b0000;
           data_instr_o <= 1'b0;
 
-          // Clear stack signals
+          // Clear stack and barrier signals
           stack_push <= 1'b0;
           stack_pop <= 1'b0;
           stack_index_read <= 1'b0;
           stack_index_write <= 1'b0;
+          barrier_push <= 1'b0;
+          barrier_pop <= 1'b0;
           case (src_unit_i)
             // Source is memory-backed, so begin a bus read.
             // Width (imm[11:10]) and byte offset (imm[9:8]) are applied
@@ -383,6 +411,12 @@ module execute (
               stack_index_read <= 1'b1;
               stack_wait_armed <= 1'b0;
               exec_state <= EXEC_SRC_STACK_WAIT;
+            end
+            UNIT_WRITE_BARRIER: begin
+              // Pop next entry from the barrier FIFO (GC drains it).
+              barrier_pop <= 1'b1;
+              stack_wait_armed <= 1'b0;
+              exec_state <= EXEC_SRC_BARRIER_WAIT;
             end
             UNIT_NONE: begin
               resolved_src = 32'b0;
@@ -514,6 +548,16 @@ module execute (
             exec_state <= EXEC_START_DST;
           end
         end
+        EXEC_SRC_BARRIER_WAIT: begin
+          barrier_pop <= 1'b0;
+          if (!stack_wait_armed) begin
+            stack_wait_armed <= 1'b1;
+          end else if (barrier_ready) begin
+            src_value <= barrier_data_out;
+            stack_wait_armed <= 1'b0;
+            exec_state <= EXEC_START_DST;
+          end
+        end
         // Destination writeback consumes the resolved source value and applies
         // the instruction side effect.
         EXEC_START_DST: begin
@@ -604,6 +648,13 @@ module execute (
               stack_wait_armed <= 1'b0;
               exec_state <= EXEC_DST_STACK_WAIT;
             end
+            UNIT_WRITE_BARRIER: begin
+              // Push address to the write barrier FIFO for GC.
+              barrier_data_in <= src_value;
+              barrier_push <= 1'b1;
+              stack_wait_armed <= 1'b0;
+              exec_state <= EXEC_DST_BARRIER_WAIT;
+            end
             UNIT_PC: begin
               // Unconditional jump: set PC to src_value.
               pc_write_o <= src_value;
@@ -646,6 +697,16 @@ module execute (
           if (!stack_wait_armed) begin
             stack_wait_armed <= 1'b1;
           end else if (stack_ready) begin
+            stack_wait_armed <= 1'b0;
+            done_o <= 1'b1;
+            exec_state <= EXEC_START_SRC;
+          end
+        end
+        EXEC_DST_BARRIER_WAIT: begin
+          barrier_push <= 1'b0;
+          if (!stack_wait_armed) begin
+            stack_wait_armed <= 1'b1;
+          end else if (barrier_ready) begin
             stack_wait_armed <= 1'b0;
             done_o <= 1'b1;
             exec_state <= EXEC_START_SRC;

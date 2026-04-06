@@ -53,7 +53,7 @@ typedef enum bit[3:0] {
     UNIT_PC               = 10,  // Program counter (source: read; dest: jump)
     UNIT_ABS_IMMEDIATE    = 11,  // Literal 12-bit immediate value (zero-extended)
     UNIT_ABS_OPERAND      = 12,  // Literal 32-bit value (next program word)
-    UNIT_RESERVED_13      = 13,  // Reserved (was REGISTER_POINTER, now use REGISTER DEREF mode)
+    UNIT_WRITE_BARRIER    = 13,  // Source: pop barrier FIFO; Dest: push to barrier FIFO
     UNIT_COND             = 14,  // Source: read condition (0 or 1); Dest: set condition (nonzero = true)
     UNIT_PC_COND          = 15   // Destination only: jump to src_value if condition register is set
 } Unit;

@@ -3098,4 +3098,132 @@ mod tests {
 
         Ok(())
     }
+
+    // --- Write barrier tests ---
+
+    #[test]
+    fn test_write_barrier_push_pop() -> Result<(), Box<dyn std::error::Error>> {
+        // Push three addresses to the write barrier, then pop them back
+        // and verify FIFO order.
+        let runtime = create_runtime()?;
+        let mut tta = runtime
+            .create_model_simple::<TtaTestbench>()
+            .map_err(|e| format!("Failed to create model: {:?}", e))?;
+        let mut helper = TtaTestHelper::new();
+
+        tta.rst_i = 1;
+        tta.clk_i = 0;
+        tta.instr_ready_i = 0;
+        tta.data_ready_i = 0;
+        tta.instr_data_read_i = 0;
+        tta.data_data_read_i = 0;
+
+        let program = vec![
+            // Push three addresses to barrier
+            instr()
+                .src(Unit::UNIT_ABS_IMMEDIATE).si(100)
+                .dst(Unit::UNIT_WRITE_BARRIER),
+            instr()
+                .src(Unit::UNIT_ABS_IMMEDIATE).si(200)
+                .dst(Unit::UNIT_WRITE_BARRIER),
+            instr()
+                .src(Unit::UNIT_ABS_IMMEDIATE).si(300)
+                .dst(Unit::UNIT_WRITE_BARRIER),
+            // Pop them back to memory for verification (FIFO order)
+            instr()
+                .src(Unit::UNIT_WRITE_BARRIER)
+                .dst(Unit::UNIT_MEMORY_IMMEDIATE).di(400),
+            instr()
+                .src(Unit::UNIT_WRITE_BARRIER)
+                .dst(Unit::UNIT_MEMORY_IMMEDIATE).di(401),
+            instr()
+                .src(Unit::UNIT_WRITE_BARRIER)
+                .dst(Unit::UNIT_MEMORY_IMMEDIATE).di(402),
+        ];
+
+        let mut machine_code = Vec::new();
+        for i in &program {
+            machine_code.extend(i.assemble());
+        }
+        helper.load_instructions(&machine_code, 0);
+        helper.run_until_reset_released(&mut tta)?;
+        helper.run_for_cycles(&mut tta, 300);
+
+        assert_eq!(helper.get_data_memory(400), 100, "First barrier entry should be 100");
+        assert_eq!(helper.get_data_memory(401), 200, "Second barrier entry should be 200");
+        assert_eq!(helper.get_data_memory(402), 300, "Third barrier entry should be 300");
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_write_barrier_gc_pattern() -> Result<(), Box<dyn std::error::Error>> {
+        // Simulate a GC write barrier pattern:
+        // 1. Store a pointer to memory (normal store)
+        // 2. Log the address to the barrier
+        // 3. Later, drain the barrier to find dirty addresses
+        let runtime = create_runtime()?;
+        let mut tta = runtime
+            .create_model_simple::<TtaTestbench>()
+            .map_err(|e| format!("Failed to create model: {:?}", e))?;
+        let mut helper = TtaTestHelper::new();
+
+        tta.rst_i = 1;
+        tta.clk_i = 0;
+        tta.instr_ready_i = 0;
+        tta.data_ready_i = 0;
+        tta.instr_data_read_i = 0;
+        tta.data_data_read_i = 0;
+
+        let program = vec![
+            // Mutator: write pointer 0xCAFE to mem[100]
+            instr()
+                .src(Unit::UNIT_ABS_OPERAND).soperand(0xCAFE)
+                .dst(Unit::UNIT_MEMORY_IMMEDIATE).di(100),
+            // Mutator: log address 100 to write barrier
+            instr()
+                .src(Unit::UNIT_ABS_IMMEDIATE).si(100)
+                .dst(Unit::UNIT_WRITE_BARRIER),
+            // Mutator: write pointer 0xBEEF to mem[200]
+            instr()
+                .src(Unit::UNIT_ABS_OPERAND).soperand(0xBEEF)
+                .dst(Unit::UNIT_MEMORY_IMMEDIATE).di(200),
+            // Mutator: log address 200 to write barrier
+            instr()
+                .src(Unit::UNIT_ABS_IMMEDIATE).si(200)
+                .dst(Unit::UNIT_WRITE_BARRIER),
+            // GC: drain barrier — pop first dirty address to reg[0]
+            instr()
+                .src(Unit::UNIT_WRITE_BARRIER)
+                .dst(Unit::UNIT_REGISTER).di(0),
+            // GC: store dirty address to mem[500] for verification
+            instr()
+                .src(Unit::UNIT_REGISTER).si(0)
+                .dst(Unit::UNIT_MEMORY_IMMEDIATE).di(500),
+            // GC: pop second dirty address
+            instr()
+                .src(Unit::UNIT_WRITE_BARRIER)
+                .dst(Unit::UNIT_REGISTER).di(1),
+            instr()
+                .src(Unit::UNIT_REGISTER).si(1)
+                .dst(Unit::UNIT_MEMORY_IMMEDIATE).di(501),
+        ];
+
+        let mut machine_code = Vec::new();
+        for i in &program {
+            machine_code.extend(i.assemble());
+        }
+        helper.load_instructions(&machine_code, 0);
+        helper.run_until_reset_released(&mut tta)?;
+        helper.run_for_cycles(&mut tta, 400);
+
+        // Verify the stores happened
+        assert_eq!(helper.get_data_memory(100), 0xCAFE);
+        assert_eq!(helper.get_data_memory(200), 0xBEEF);
+        // Verify the barrier logged the correct addresses
+        assert_eq!(helper.get_data_memory(500), 100, "First dirty address should be 100");
+        assert_eq!(helper.get_data_memory(501), 200, "Second dirty address should be 200");
+
+        Ok(())
+    }
 }
