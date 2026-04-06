@@ -10,8 +10,8 @@ module cmod_a35t_top (
     input wire sysclk_i,               // System clock
 
     // External SRAM interface (directly bridged from data_bus)
-    input logic [31:0] sram_data_i,    // SRAM read data
-    output logic [31:0] sram_data_o,   // SRAM write data
+    input logic [DATA_WIDTH-1:0] sram_data_i,    // SRAM read data (36-bit tagged)
+    output logic [DATA_WIDTH-1:0] sram_data_o,   // SRAM write data (36-bit tagged)
     output logic [18:0] sram_addr_o,   // SRAM word address
     output logic sram_valid_o,         // SRAM transaction valid
     output logic [3:0] sram_wstrb_o,   // SRAM per-byte write strobes
@@ -54,7 +54,7 @@ module cmod_a35t_top (
 
   // Data bus wires (execute ↔ SRAM)
   wire [3:0]  dbs_wstrb;
-  wire [31:0] dbs_write_data;
+  wire [DATA_WIDTH-1:0] dbs_write_data;
   /* verilator lint_off UNUSEDSIGNAL */
   wire [31:0] dbs_addr;
   /* verilator lint_on UNUSEDSIGNAL */

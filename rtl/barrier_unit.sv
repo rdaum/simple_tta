@@ -17,11 +17,11 @@ module barrier_unit #(
 
     // Push interface (mutator writes)
     input wire        push_i,
-    input wire [31:0] data_i,
+    input wire [DATA_WIDTH-1:0] data_i,
 
     // Pop interface (GC reads)
     input wire        pop_i,
-    output reg [31:0] data_o,
+    output reg [DATA_WIDTH-1:0] data_o,
     output wire       ready_o,
 
     // Status
@@ -35,7 +35,7 @@ module barrier_unit #(
   localparam DEPTH = BARRIER_DEPTH;
   localparam PTR_BITS = $clog2(BARRIER_DEPTH);
 
-  reg [31:0] fifo [0:DEPTH-1];
+  reg [DATA_WIDTH-1:0] fifo [0:DEPTH-1];
   reg [PTR_BITS:0] count;  // 6 bits to hold 0..32
   reg [PTR_BITS-1:0] wr_ptr;
   reg [PTR_BITS-1:0] rd_ptr;
@@ -63,7 +63,7 @@ module barrier_unit #(
       count <= 0;
       wr_ptr <= 0;
       rd_ptr <= 0;
-      data_o <= 32'b0;
+      data_o <= {DATA_WIDTH{1'b0}};
       state <= BARRIER_IDLE;
       barrier_overflow_o <= 1'b0;
     end else begin
@@ -95,7 +95,7 @@ module barrier_unit #(
             rd_ptr <= rd_ptr + 1;
             count <= count - 1;
           end else begin
-            data_o <= 32'b0;
+            data_o <= {DATA_WIDTH{1'b0}};
           end
           state <= BARRIER_IDLE;
         end

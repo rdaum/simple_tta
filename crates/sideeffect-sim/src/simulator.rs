@@ -82,7 +82,7 @@ pub fn test_basic_reset_sequence(tta: &mut TtaTestbench) -> Result<()> {
 }
 
 pub struct SramSim {
-    mem: Vec<u32>,
+    mem: Vec<u64>, // 36-bit tagged words stored in u64
 }
 
 impl SramSim {
@@ -92,23 +92,29 @@ impl SramSim {
         }
     }
 
-    pub fn read(&self, addr: usize) -> u32 {
+    pub fn read(&self, addr: usize) -> u64 {
         self.mem.get(addr).copied().unwrap_or(0)
     }
 
-    pub fn write(&mut self, addr: usize, data: u32, wstrb: u8) {
+    pub fn write(&mut self, addr: usize, data: u64, wstrb: u8) {
         let Some(slot) = self.mem.get_mut(addr) else {
             return;
         };
 
-        let mut bytes = slot.to_le_bytes();
-        let write_bytes = data.to_le_bytes();
+        // Byte strobes affect the low 32 bits (value portion).
+        // Tag bits [35:32] are always written when any strobe is active.
+        let old_val = *slot as u32;
+        let new_val = data as u32;
+        let mut bytes = old_val.to_le_bytes();
+        let write_bytes = new_val.to_le_bytes();
         for idx in 0..4 {
             if (wstrb & (1 << idx)) != 0 {
                 bytes[idx] = write_bytes[idx];
             }
         }
-        *slot = u32::from_le_bytes(bytes);
+        let val32 = u32::from_le_bytes(bytes) as u64;
+        let tag = if wstrb != 0 { data & 0xF_0000_0000 } else { *slot & 0xF_0000_0000 };
+        *slot = tag | val32;
     }
 }
 

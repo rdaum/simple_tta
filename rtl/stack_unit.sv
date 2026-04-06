@@ -27,8 +27,8 @@ module stack_unit #(
     input wire stack_index_write_i,
 
     // Data interface
-    input wire [31:0] data_i,
-    output logic [31:0] data_o,
+    input wire [DATA_WIDTH-1:0] data_i,
+    output logic [DATA_WIDTH-1:0] data_o,
     output logic stack_ready_o,
 
     // Error reporting
@@ -42,7 +42,7 @@ module stack_unit #(
   localparam [STACK_IDX_BITS-1:0] STACK_MAX   = STACK_DEPTH - 1;
   /* verilator lint_on WIDTHTRUNC */
 
-  reg [31:0] stack_mem[0:NUM_STACKS-1][0:STACK_DEPTH-1];
+  reg [DATA_WIDTH-1:0] stack_mem[0:NUM_STACKS-1][0:STACK_DEPTH-1];
 
   // Stack pointers: each points at the next free slot (empty-ascending).
   reg [STACK_IDX_BITS-1:0] stack_pointers[0:NUM_STACKS-1];
@@ -70,7 +70,7 @@ module stack_unit #(
   // new data (read-after-write hazard).
   reg [2:0] last_write_stack_id;
   reg [STACK_IDX_BITS-1:0] last_write_addr;
-  reg [31:0] last_write_data;
+  reg [DATA_WIDTH-1:0] last_write_data;
   reg last_write_valid;
 
   // --- Combinational read path ---
@@ -80,7 +80,7 @@ module stack_unit #(
 
   always_comb begin
     abs_index = {STACK_IDX_BITS{1'b0}};
-    data_o = 32'b0;
+    data_o = {DATA_WIDTH{1'b0}};
 
     if (!rst_i) begin
       if (state == STACK_POPPING) begin

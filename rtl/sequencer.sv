@@ -48,8 +48,8 @@ module sequencer (
     input  logic [31:0] instr_read_data_i,
     output logic [31:0] pc_o,           // PC of current instruction (see above)
     output logic [31:0] op_o,           // Fetched opcode word for the decoder
-    output logic [31:0] src_operand_o,  // 32-bit source operand (when needed)
-    output logic [31:0] dst_operand_o,  // 32-bit destination operand (when needed)
+    output logic [DATA_WIDTH-1:0] src_operand_o,  // Tagged source operand (when needed)
+    output logic [DATA_WIDTH-1:0] dst_operand_o,  // Tagged destination operand (when needed)
 
     // Valid/accept handshake with execute.
     output wire         instr_valid_o,  // Queue has a complete instruction
@@ -82,8 +82,8 @@ module sequencer (
   // Each entry: {pc, op, src_operand, dst_operand}
   logic [31:0] q_pc          [QUEUE_DEPTH-1:0];
   logic [31:0] q_op          [QUEUE_DEPTH-1:0];
-  logic [31:0] q_src_operand [QUEUE_DEPTH-1:0];
-  logic [31:0] q_dst_operand [QUEUE_DEPTH-1:0];
+  logic [DATA_WIDTH-1:0] q_src_operand [QUEUE_DEPTH-1:0];
+  logic [DATA_WIDTH-1:0] q_dst_operand [QUEUE_DEPTH-1:0];
   logic        q_valid       [QUEUE_DEPTH-1:0];
 
   // Queue pointers (1-bit each for a 2-entry queue).
@@ -99,7 +99,8 @@ module sequencer (
   // (no 1-cycle delay from non-blocking promotion). When accept is
   // not active, the registered values hold the previous instruction
   // stable for multi-cycle execute.
-  logic [31:0] reg_op, reg_src_operand, reg_dst_operand, reg_pc;
+  logic [31:0] reg_op, reg_pc;
+  logic [DATA_WIDTH-1:0] reg_src_operand, reg_dst_operand;
   assign op_o          = instr_accept_i ? q_op[rd_ptr]          : reg_op;
   assign src_operand_o = instr_accept_i ? q_src_operand[rd_ptr] : reg_src_operand;
   assign dst_operand_o = instr_accept_i ? q_dst_operand[rd_ptr] : reg_dst_operand;
@@ -108,7 +109,7 @@ module sequencer (
   // Staging area: the fetch FSM builds the instruction here before
   // enqueueing it as a complete entry.
   logic [31:0] staging_op;
-  logic [31:0] staging_src_operand;
+  logic [DATA_WIDTH-1:0] staging_src_operand;
 
   // Fetch address — separate from pc_o. Advances as the fetch FSM
   // reads instruction words. pc_o is only updated on handoff.
@@ -155,11 +156,11 @@ module sequencer (
     if (rst_i) begin
       reg_pc <= 32'b0;
       reg_op <= 32'b0;
-      reg_src_operand <= 32'b0;
-      reg_dst_operand <= 32'b0;
+      reg_src_operand <= {DATA_WIDTH{1'b0}};
+      reg_dst_operand <= {DATA_WIDTH{1'b0}};
       fetch_pc <= 32'b0;
       staging_op <= 32'b0;
-      staging_src_operand <= 32'b0;
+      staging_src_operand <= {DATA_WIDTH{1'b0}};
       q_valid[0] <= 1'b0;
       q_valid[1] <= 1'b0;
       wr_ptr <= 1'b0;
@@ -225,8 +226,8 @@ module sequencer (
             end else begin
               // 1-word instruction complete. Enqueue it.
               q_op[wr_ptr] <= instr_read_data_i;
-              q_src_operand[wr_ptr] <= 32'b0;
-              q_dst_operand[wr_ptr] <= 32'b0;
+              q_src_operand[wr_ptr] <= {DATA_WIDTH{1'b0}};
+              q_dst_operand[wr_ptr] <= {DATA_WIDTH{1'b0}};
               q_pc[wr_ptr] <= fetch_pc_plus_1;
               q_valid[wr_ptr] <= 1'b1;
               wr_ptr <= ~wr_ptr;
@@ -241,7 +242,7 @@ module sequencer (
 
         SEQ_FETCH_SRC_OPERAND: begin
           if (instr_ready_i) begin
-            staging_src_operand <= instr_read_data_i;
+            staging_src_operand <= {{TAG_WIDTH{1'b0}}, instr_read_data_i};
             if (needs_dst_op(staging_op)) begin
               // 3-word instruction: still need dst operand.
               instr_valid_o_bus <= 1'b0;
@@ -250,8 +251,8 @@ module sequencer (
             end else begin
               // 2-word instruction complete. Enqueue it.
               q_op[wr_ptr] <= staging_op;
-              q_src_operand[wr_ptr] <= instr_read_data_i;
-              q_dst_operand[wr_ptr] <= 32'b0;
+              q_src_operand[wr_ptr] <= {{TAG_WIDTH{1'b0}}, instr_read_data_i};
+              q_dst_operand[wr_ptr] <= {DATA_WIDTH{1'b0}};
               q_pc[wr_ptr] <= fetch_pc_plus_2;
               q_valid[wr_ptr] <= 1'b1;
               wr_ptr <= ~wr_ptr;
@@ -276,7 +277,7 @@ module sequencer (
             // 3-word instruction complete. Enqueue it.
             q_op[wr_ptr] <= staging_op;
             q_src_operand[wr_ptr] <= staging_src_operand;
-            q_dst_operand[wr_ptr] <= instr_read_data_i;
+            q_dst_operand[wr_ptr] <= {{TAG_WIDTH{1'b0}}, instr_read_data_i};
             q_pc[wr_ptr] <= fetch_pc_plus_2;
             q_valid[wr_ptr] <= 1'b1;
             wr_ptr <= ~wr_ptr;

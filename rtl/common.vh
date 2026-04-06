@@ -78,11 +78,12 @@ typedef enum bit[4:0] {
 localparam PRED_IF_SET   = 0;  // flags[0]: execute only if cond_reg == 1
 localparam PRED_IF_CLEAR = 1;  // flags[1]: execute only if cond_reg == 0
 
-// Tag configuration for tagged-value support. The tag occupies the low
-// TAG_WIDTH bits of every 32-bit value. Registers, stacks, and memory
-// all store tagged values; the register unit type (REG/REG_VALUE/REG_TAG/
-// REG_DEREF) controls how the tag is handled during reads and writes.
-localparam int TAG_WIDTH = 2;
-localparam logic [31:0] TAG_MASK_32 = (1 << TAG_WIDTH) - 1;  // 32'h0000_0003
+// Tagged data width. Every register, stack slot, and memory word is
+// DATA_WIDTH bits: a VAL_WIDTH-bit value plus a TAG_WIDTH-bit sidecar tag.
+// The tag is stored in the high bits [DATA_WIDTH-1:VAL_WIDTH], NOT in
+// the low bits of the value — no masking is ever needed on addresses.
+localparam int TAG_WIDTH  = 4;   // 4-bit tag → 16 types
+localparam int VAL_WIDTH  = 32;  // 32-bit value (addresses, integers)
+localparam int DATA_WIDTH = VAL_WIDTH + TAG_WIDTH;  // 36-bit tagged word
 
 `endif  // common_vh_

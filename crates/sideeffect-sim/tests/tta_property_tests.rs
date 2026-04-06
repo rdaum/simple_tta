@@ -12,7 +12,7 @@ fn create_runtime() -> Result<VerilatorRuntime, Box<dyn std::error::Error>> {
 struct TtaPropertyHelper {
     cycle_count: u32,
     instruction_memory: HashMap<u32, u32>,
-    data_memory: HashMap<u32, u32>,
+    data_memory: HashMap<u32, u64>,
 }
 
 impl TtaPropertyHelper {
@@ -48,19 +48,23 @@ impl TtaPropertyHelper {
             let addr = tta.data_addr_o;
             let wstrb = tta.data_wstrb_o as u8;
             if wstrb != 0 {
-                // Write operation with per-byte strobes
-                let existing = *self.data_memory.get(&addr).unwrap_or(&0);
+                // Write operation with per-byte strobes for the 32-bit value portion.
+                // The 4-bit sidecar tag (bits [35:32]) is always written alongside.
+                let existing = *self.data_memory.get(&addr).unwrap_or(&0u64);
                 let mut bytes = existing.to_le_bytes();
                 let write_bytes = tta.data_data_write_o.to_le_bytes();
+                // Byte strobes control the low 4 bytes (32-bit value)
                 for i in 0..4 {
                     if (wstrb & (1 << i)) != 0 {
                         bytes[i] = write_bytes[i];
                     }
                 }
-                self.data_memory.insert(addr, u32::from_le_bytes(bytes));
+                // Tag byte (byte 4, containing bits [35:32]) always written with any strobe
+                bytes[4] = write_bytes[4];
+                self.data_memory.insert(addr, u64::from_le_bytes(bytes));
             } else {
                 // Read operation
-                tta.data_data_read_i = *self.data_memory.get(&addr).unwrap_or(&0);
+                tta.data_data_read_i = *self.data_memory.get(&addr).unwrap_or(&0u64);
             }
             tta.data_ready_i = 1;
         } else {
@@ -105,12 +109,12 @@ impl TtaPropertyHelper {
         }
     }
 
-    fn set_data_memory(&mut self, addr: u32, value: u32) {
+    fn set_data_memory(&mut self, addr: u32, value: u64) {
         self.data_memory.insert(addr, value);
     }
 
-    fn get_data_memory(&self, addr: u32) -> u32 {
-        *self.data_memory.get(&addr).unwrap_or(&0)
+    fn get_data_memory(&self, addr: u32) -> u64 {
+        *self.data_memory.get(&addr).unwrap_or(&0u64)
     }
 
     fn is_instruction_done<'a>(&self, tta: &TtaTestbench<'a>) -> bool {
@@ -135,9 +139,15 @@ fn memory_addr() -> impl Strategy<Value = u32> {
     0u32..0x1000 // Keep addresses reasonable for testing
 }
 
-/// Generate a 32-bit data value
+/// Generate a 32-bit data value (tag=0, so value fits in low 32 bits as u64)
 fn data_value() -> impl Strategy<Value = u32> {
     any::<u32>()
+}
+
+/// Generate a 36-bit tagged value (32-bit value + 4-bit tag in bits [35:32])
+#[allow(dead_code)]
+fn tagged_value() -> impl Strategy<Value = u64> {
+    (any::<u32>(), 0u8..16).prop_map(|(val, tag)| ((tag as u64) << 32) | (val as u64))
 }
 
 #[cfg(test)]
@@ -220,7 +230,7 @@ mod property_tests {
             helper.run_for_cycles(&mut tta, 50);
 
             // Verify memory consistency (at least for the lower 8 bits that we can address)
-            let written_value = value & 0xFF;
+            let written_value = (value & 0xFF) as u64;
             let read_value = helper.get_data_memory((addr + 1) & 0xFF);
             prop_assert_eq!(read_value & 0xFF, written_value);
         }
@@ -276,7 +286,7 @@ mod property_tests {
             helper.run_for_cycles(&mut tta, 50);
 
             // Verify the register still contains the original value
-            prop_assert_eq!(helper.get_data_memory(100), 42);
+            prop_assert_eq!(helper.get_data_memory(100), 42u64);
         }
 
         /// Property: ALU addition is commutative
@@ -435,7 +445,7 @@ mod property_tests {
             }
 
             helper.load_instructions(&machine_code, 0);
-            helper.set_data_memory(100, 0xDEADBEEF);
+            helper.set_data_memory(100, 0xDEADBEEF_u64);
             helper.run_until_reset_released(&mut tta).unwrap();
 
             // Track bus protocol state
@@ -623,7 +633,7 @@ mod property_tests {
                 if write_started && !write_completed {
                     // Property: Memory should not see partial writes
                     let current_value = helper.get_data_memory(addr & 0xFF);
-                    if current_value != 0 && current_value != (value & 0xFF) {
+                    if current_value != 0 && current_value != (value & 0xFF) as u64 {
                         intermediate_value_seen = true;
                     }
                 }
@@ -637,7 +647,7 @@ mod property_tests {
             // Property: Final result should be correct
             let final_value = helper.get_data_memory((addr + 1) & 0xFF);
             if write_completed && read_started {
-                prop_assert_eq!(final_value & 0xFF, value & 0xFF, "Atomic transaction should preserve data");
+                prop_assert_eq!(final_value & 0xFF, (value & 0xFF) as u64, "Atomic transaction should preserve data");
             }
         }
 
@@ -702,8 +712,9 @@ mod property_tests {
             helper2.run_for_cycles(&mut tta2, 50);
 
             // Results should be negatives of each other (modulo overflow)
-            let result1 = helper1.get_data_memory(100) as i32;
-            let result2 = helper2.get_data_memory(100) as i32;
+            // ALU operates on 32-bit values; extract low 32 bits from the 36-bit result
+            let result1 = (helper1.get_data_memory(100) & 0xFFFFFFFF) as u32 as i32;
+            let result2 = (helper2.get_data_memory(100) & 0xFFFFFFFF) as u32 as i32;
 
             // Check exact anti-commutativity
             prop_assert_eq!(result1, -result2, "a - b should equal -(b - a)");
@@ -825,12 +836,12 @@ mod property_tests {
             let result = helper.get_data_memory(100);
 
             // Debug: let's see what we actually got vs expected
-            if result != expected_result as u32 {
+            if result != expected_result as u64 {
                 eprintln!("Debug: value={}, op={}, identity={}, result={}, expected={}",
                          value, op, identity_value, result, expected_result);
             }
 
-            prop_assert_eq!(result, expected_result as u32, "Logical operation should satisfy identity");
+            prop_assert_eq!(result, expected_result as u64, "Logical operation should satisfy identity");
         }
 
         /// Property: ALU comparison operations are consistent
@@ -893,22 +904,22 @@ mod property_tests {
             let [lt_result, eq_result, gt_result] = [results[0], results[1], results[2]];
 
             // Property: Exactly one comparison should be true
-            let true_count = [lt_result, eq_result, gt_result].iter().filter(|&&x| x != 0).count();
+            let true_count = [lt_result, eq_result, gt_result].iter().filter(|&&x| x != 0u64).count();
             prop_assert_eq!(true_count, 1, "Exactly one comparison should be true");
 
             // Property: Results should match expected values
             if a < b {
-                prop_assert_ne!(lt_result, 0, "LT should be true when a < b");
-                prop_assert_eq!(eq_result, 0, "EQL should be false when a < b");
-                prop_assert_eq!(gt_result, 0, "GT should be false when a < b");
+                prop_assert_ne!(lt_result, 0u64, "LT should be true when a < b");
+                prop_assert_eq!(eq_result, 0u64, "EQL should be false when a < b");
+                prop_assert_eq!(gt_result, 0u64, "GT should be false when a < b");
             } else if a == b {
-                prop_assert_eq!(lt_result, 0, "LT should be false when a == b");
-                prop_assert_ne!(eq_result, 0, "EQL should be true when a == b");
-                prop_assert_eq!(gt_result, 0, "GT should be false when a == b");
+                prop_assert_eq!(lt_result, 0u64, "LT should be false when a == b");
+                prop_assert_ne!(eq_result, 0u64, "EQL should be true when a == b");
+                prop_assert_eq!(gt_result, 0u64, "GT should be false when a == b");
             } else {
-                prop_assert_eq!(lt_result, 0, "LT should be false when a > b");
-                prop_assert_eq!(eq_result, 0, "EQL should be false when a > b");
-                prop_assert_ne!(gt_result, 0, "GT should be true when a > b");
+                prop_assert_eq!(lt_result, 0u64, "LT should be false when a > b");
+                prop_assert_eq!(eq_result, 0u64, "EQL should be false when a > b");
+                prop_assert_ne!(gt_result, 0u64, "GT should be true when a > b");
             }
         }
 
@@ -948,7 +959,7 @@ mod property_tests {
             helper.run_for_cycles(&mut tta, 50);
 
             let shift_result = helper.get_data_memory(100);
-            let expected = (value as u32) << (shift_amount as u32);
+            let expected = ((value as u32) << (shift_amount as u32)) as u64;
 
             // Property: Left shift should equal multiplication by 2^n (within 32-bit limits)
             prop_assert_eq!(shift_result, expected, "Left shift should equal value * 2^n");
@@ -1020,11 +1031,11 @@ mod property_tests {
             let remainder = helper.get_data_memory(100);
 
             // Property: dividend = quotient * divisor + remainder
-            let reconstructed = quotient * (divisor as u32) + remainder;
-            prop_assert_eq!(reconstructed, dividend as u32, "Division identity: a = (a/b)*b + (a%b)");
+            let reconstructed = quotient * (divisor as u64) + remainder;
+            prop_assert_eq!(reconstructed, dividend as u64, "Division identity: a = (a/b)*b + (a%b)");
 
             // Property: remainder < divisor
-            prop_assert!(remainder < divisor as u32, "Remainder should be less than divisor");
+            prop_assert!(remainder < divisor as u64, "Remainder should be less than divisor");
         }
 
         /// Property: ALU units operate independently
@@ -1074,18 +1085,18 @@ mod property_tests {
             let result0 = helper.get_data_memory(100);
             let result1 = helper.get_data_memory(101);
 
-            // Calculate expected results
+            // Calculate expected results (ALU operates on 32-bit values, result is u64 with tag=0)
             let expected0 = match op1 {
-                op if op == ALUOp::ALU_ADD as u8 => (value1 as u32).wrapping_add(value2 as u32),
-                op if op == ALUOp::ALU_SUB as u8 => (value1 as u32).wrapping_sub(value2 as u32),
-                op if op == ALUOp::ALU_MUL as u8 => (value1 as u32).wrapping_mul(value2 as u32),
+                op if op == ALUOp::ALU_ADD as u8 => (value1 as u32).wrapping_add(value2 as u32) as u64,
+                op if op == ALUOp::ALU_SUB as u8 => (value1 as u32).wrapping_sub(value2 as u32) as u64,
+                op if op == ALUOp::ALU_MUL as u8 => (value1 as u32).wrapping_mul(value2 as u32) as u64,
                 _ => unreachable!(),
             };
 
             let expected1 = match op2 {
-                op if op == ALUOp::ALU_ADD as u8 => (value2 as u32).wrapping_add(value1 as u32),
-                op if op == ALUOp::ALU_SUB as u8 => (value2 as u32).wrapping_sub(value1 as u32),
-                op if op == ALUOp::ALU_MUL as u8 => (value2 as u32).wrapping_mul(value1 as u32),
+                op if op == ALUOp::ALU_ADD as u8 => (value2 as u32).wrapping_add(value1 as u32) as u64,
+                op if op == ALUOp::ALU_SUB as u8 => (value2 as u32).wrapping_sub(value1 as u32) as u64,
+                op if op == ALUOp::ALU_MUL as u8 => (value2 as u32).wrapping_mul(value1 as u32) as u64,
                 _ => unreachable!(),
             };
 
@@ -1143,14 +1154,14 @@ mod property_tests {
             let final_reg2 = helper.get_data_memory(103);
 
             // Verify initial values were stored correctly
-            prop_assert_eq!(initial_reg1 & 0xFF, value1 as u32, "Register {} should store initial value", reg1);
-            prop_assert_eq!(initial_reg2 & 0xFF, value2 as u32, "Register {} should store initial value", reg2);
+            prop_assert_eq!(initial_reg1 & 0xFF, value1 as u64, "Register {} should store initial value", reg1);
+            prop_assert_eq!(initial_reg2 & 0xFF, value2 as u64, "Register {} should store initial value", reg2);
 
             // Verify reg1 was modified
-            prop_assert_eq!(modified_reg1 & 0xFF, 0xAD, "Register {} should be modified", reg1);
+            prop_assert_eq!(modified_reg1 & 0xFF, 0xADu64, "Register {} should be modified", reg1);
 
             // Verify reg2 was not affected by reg1 modification
-            prop_assert_eq!(final_reg2 & 0xFF, value2 as u32, "Register {} should be unaffected by changes to register {}", reg2, reg1);
+            prop_assert_eq!(final_reg2 & 0xFF, value2 as u64, "Register {} should be unaffected by changes to register {}", reg2, reg1);
         }
 
         /// Property: Division by zero handling is predictable
@@ -1191,7 +1202,8 @@ mod property_tests {
 
             // Property: Division by zero should produce a consistent result (could be 0, max value, or unchanged)
             // The exact behavior depends on implementation, but it should be deterministic
-            prop_assert!(result == 0 || result == u32::MAX || result == dividend as u32,
+            let val = result & 0xFFFFFFFF; // extract 32-bit value portion
+            prop_assert!(val == 0 || val == u32::MAX as u64 || val == dividend as u64,
                         "Division by zero should produce deterministic result: got {}", result);
         }
 
@@ -1290,7 +1302,7 @@ mod property_tests {
             let result = helper.get_data_memory(100);
 
             // Property: Memory access near boundaries should work correctly
-            prop_assert_eq!(result & 0xFF, test_value as u32,
+            prop_assert_eq!(result & 0xFF, test_value as u64,
                           "Memory access at address {} should work correctly", high_addr);
         }
 
@@ -1332,7 +1344,7 @@ mod property_tests {
             let result = helper.get_data_memory(100);
 
             // Property: NOP should always produce 0 regardless of inputs
-            prop_assert_eq!(result, 0, "ALU NOP should always produce 0, got {}", result);
+            prop_assert_eq!(result, 0u64, "ALU NOP should always produce 0, got {}", result);
         }
 
         /// Property: ALU NOT operation produces bitwise complement
@@ -1369,7 +1381,7 @@ mod property_tests {
             helper.run_for_cycles(&mut tta, 50);
 
             let result = helper.get_data_memory(100);
-            let expected = !(value as u32); // 32-bit NOT operation
+            let expected = (!(value as u32)) as u64; // 32-bit NOT operation, result as u64
 
             // Property: NOT should produce bitwise complement
             prop_assert_eq!(result, expected, "ALU NOT: !{} should be {}, got {}", value, expected, result);
@@ -1411,7 +1423,7 @@ mod property_tests {
             helper.run_for_cycles(&mut tta, 50);
 
             let sr_result = helper.get_data_memory(100);
-            let expected_sr = (value as u32) >> (shift_amount as u32);
+            let expected_sr = ((value as u32) >> (shift_amount as u32)) as u64;
 
             // Property: Logical right shift
             prop_assert_eq!(sr_result, expected_sr, "Logical right shift: {} >> {} should be {}, got {}",
@@ -1456,7 +1468,7 @@ mod property_tests {
 
             // For arithmetic right shift, we need to handle sign extension
             // Since our test values are small positive numbers, arithmetic and logical shift should be the same
-            let expected_sra = ((value as i32) >> (shift_amount as i32)) as u32;
+            let expected_sra = (((value as i32) >> (shift_amount as i32)) as u32) as u64;
 
             // Property: Arithmetic right shift preserves sign
             prop_assert_eq!(sra_result, expected_sra, "Arithmetic right shift: {} >>> {} should be {}, got {}",
@@ -1511,7 +1523,7 @@ mod property_tests {
                 let result_addr = 200 + pop_index;    // Address where this pop was stored
                 let result = helper.get_data_memory(result_addr as u32);
 
-                prop_assert_eq!(result, expected_value, "Stack LIFO violated: pushed {}, got {} in pop {}",
+                prop_assert_eq!(result, expected_value as u64, "Stack LIFO violated: pushed {}, got {} in pop {}",
                               expected_value, result, pop_index);
             }
         }
@@ -1572,8 +1584,8 @@ mod property_tests {
         let result_stack2 = helper.get_data_memory(100);
         let result_stack1 = helper.get_data_memory(101);
 
-        prop_assert_eq!(result_stack2, value2, "Stack {} affected by operations on stack {}", stack2_id, stack1_id);
-        prop_assert_eq!(result_stack1, value1, "Stack {} affected by operations on stack {}", stack1_id, stack2_id);
+        prop_assert_eq!(result_stack2, value2 as u64, "Stack {} affected by operations on stack {}", stack2_id, stack1_id);
+        prop_assert_eq!(result_stack1, value1 as u64, "Stack {} affected by operations on stack {}", stack1_id, stack2_id);
     }
 
     /// Property: Stack peek operations don't modify stack pointer
@@ -1626,14 +1638,14 @@ mod property_tests {
         // Verify peek result if it was valid
         if (peek_offset as usize) < values.len() {
             let peeked_value = helper.get_data_memory(150);
-            let expected_peek = values[values.len() - 1 - peek_offset as usize] as u32;
+            let expected_peek = values[values.len() - 1 - peek_offset as usize] as u64;
             prop_assert_eq!(peeked_value, expected_peek, "Stack peek returned wrong value");
         }
 
         // Verify LIFO order is preserved despite peeking
         for (i, &expected) in values.iter().enumerate().rev() {
             let result = helper.get_data_memory((200 + (values.len() - 1 - i)) as u32);
-            prop_assert_eq!(result, expected as u32, "LIFO order disrupted by peek operation");
+            prop_assert_eq!(result, expected as u64, "LIFO order disrupted by peek operation");
         }
     }
 
@@ -1692,9 +1704,9 @@ mod property_tests {
 
             let expected = if (poke_offset as usize) < initial_values.len() &&
                              i == (initial_values.len() - 1 - poke_offset as usize) {
-                new_value as u32  // This position was poked
+                new_value as u64  // This position was poked
             } else {
-                original as u32   // This position unchanged
+                original as u64   // This position unchanged
             };
 
             prop_assert_eq!(result, expected,
@@ -1745,11 +1757,11 @@ mod property_tests {
 
         // Property: Stack should handle overflow gracefully
         // The exact behavior depends on implementation, but should be deterministic
-        let results: Vec<u32> = (0..5).map(|i| helper.get_data_memory(200 + i)).collect();
+        let results: Vec<u64> = (0..5).map(|i| helper.get_data_memory(200 + i)).collect();
 
         // At minimum, we should get some reasonable values back (not garbage)
         for result in results.iter() {
-            prop_assert!(*result < push_count || *result == 0,
+            prop_assert!(*result < push_count as u64 || *result == 0,
                        "Stack overflow produced unreasonable result: {}", result);
         }
     }
@@ -1800,8 +1812,8 @@ mod property_tests {
 
         // Property: Empty stack pops should be deterministic (likely 0)
         prop_assert_eq!(empty_pop1, empty_pop2, "Empty stack pops should be consistent");
-        prop_assert_eq!(valid_pop, 0x1234, "Valid pop should return pushed value");
-        prop_assert_eq!(empty_pop1, 0, "Empty stack pop should return 0"); // Based on our implementation
+        prop_assert_eq!(valid_pop, 0x1234u64, "Valid pop should return pushed value");
+        prop_assert_eq!(empty_pop1, 0u64, "Empty stack pop should return 0"); // Based on our implementation
 
     }
 
@@ -1852,7 +1864,7 @@ mod property_tests {
         helper.run_for_cycles(&mut tta, 200);
 
         let result = helper.get_data_memory(100);
-        prop_assert_eq!(result, marker,
+        prop_assert_eq!(result, marker as u64,
             "Jump should always skip over the zero-store instruction");
     }
 
@@ -1910,23 +1922,24 @@ mod property_tests {
 
         if cond_value != 0 {
             // Branch taken — addr 3 should be skipped
-            prop_assert_eq!(mem100, 0,
+            prop_assert_eq!(mem100, 0u64,
                 "Branch taken (cond={}): skipped instruction should not have written mem[100]",
                 cond_value);
         } else {
             // Branch not taken — addr 3 should execute
-            prop_assert_eq!(mem100, 111,
+            prop_assert_eq!(mem100, 111u64,
                 "Branch not taken (cond=0): addr 3 should write 111 to mem[100]");
         }
-        prop_assert_eq!(mem101, 222, "Addr 4 should always execute");
+        prop_assert_eq!(mem101, 222u64, "Addr 4 should always execute");
     }
 
     // --- Tagged register properties ---
 
-    /// Property: TAG read extracts only the low TAG_WIDTH bits
+    /// Property: TAG read extracts only the sidecar tag bits [35:32]
     #[test]
-    fn prop_tag_read_extracts_low_bits(
+    fn prop_tag_read_extracts_sidecar_bits(
         value in data_value(),
+        tag_val in 0u8..16,
     ) {
         let runtime = create_runtime().unwrap();
         let mut tta = runtime.create_model_simple::<TtaTestbench>().unwrap();
@@ -1940,12 +1953,17 @@ mod property_tests {
         tta.data_data_read_i = 0;
 
         let program = vec![
-            // Load arbitrary value into r0
+            // Load arbitrary value into r0 (tag=0 from ABS_OPERAND)
             instr()
                 .src(Unit::UNIT_ABS_OPERAND)
                 .soperand(value)
                 .dst(Unit::UNIT_REGISTER)
                 .di(0),
+            // Write sidecar tag
+            instr()
+                .src(Unit::UNIT_ABS_IMMEDIATE)
+                .si(tag_val)
+                .dst_reg_tag(0),
             // Read TAG → mem[100]
             instr()
                 .src_reg_tag(0)
@@ -1962,14 +1980,15 @@ mod property_tests {
         helper.run_for_cycles(&mut tta, 200);
 
         let tag = helper.get_data_memory(100);
-        prop_assert_eq!(tag, value & 0x3,
-            "TAG read of {:#010x} should be {}, got {}", value, value & 0x3, tag);
+        prop_assert_eq!(tag, (tag_val & 0xF) as u64,
+            "TAG read should return sidecar tag {}, got {}", tag_val & 0xF, tag);
     }
 
-    /// Property: VALUE read zeros the tag bits
+    /// Property: VALUE read returns only the 32-bit value portion (tag bits = 0)
     #[test]
-    fn prop_value_read_zeros_tag(
+    fn prop_value_read_strips_tag(
         value in data_value(),
+        tag_val in 0u8..16,
     ) {
         let runtime = create_runtime().unwrap();
         let mut tta = runtime.create_model_simple::<TtaTestbench>().unwrap();
@@ -1983,11 +2002,18 @@ mod property_tests {
         tta.data_data_read_i = 0;
 
         let program = vec![
+            // Load value into r0 (tag=0 from ABS_OPERAND)
             instr()
                 .src(Unit::UNIT_ABS_OPERAND)
                 .soperand(value)
                 .dst(Unit::UNIT_REGISTER)
                 .di(0),
+            // Set sidecar tag
+            instr()
+                .src(Unit::UNIT_ABS_IMMEDIATE)
+                .si(tag_val)
+                .dst_reg_tag(0),
+            // Read VALUE → mem[100] (should strip tag, return 32-bit value as u64)
             instr()
                 .src_reg_value(0)
                 .dst(Unit::UNIT_MEMORY_IMMEDIATE)
@@ -2003,15 +2029,16 @@ mod property_tests {
         helper.run_for_cycles(&mut tta, 200);
 
         let result = helper.get_data_memory(100);
-        prop_assert_eq!(result, value & !0x3,
-            "VALUE read of {:#010x} should be {:#010x}, got {:#010x}",
-            value, value & !0x3, result);
+        prop_assert_eq!(result, value as u64,
+            "VALUE read of tagged register should return {:#010x}, got {:#018x}",
+            value, result);
     }
 
-    /// Property: RAW = VALUE | TAG (value and tag together reconstruct the original)
+    /// Property: RAW = (TAG << 32) | VALUE (sidecar tag in high bits, value in low 32)
     #[test]
-    fn prop_raw_equals_value_or_tag(
+    fn prop_raw_equals_tag_shifted_or_value(
         value in data_value(),
+        tag_val in 0u8..16,
     ) {
         let runtime = create_runtime().unwrap();
         let mut tta = runtime.create_model_simple::<TtaTestbench>().unwrap();
@@ -2025,11 +2052,17 @@ mod property_tests {
         tta.data_data_read_i = 0;
 
         let program = vec![
+            // Load value into r0 (tag=0 from ABS_OPERAND)
             instr()
                 .src(Unit::UNIT_ABS_OPERAND)
                 .soperand(value)
                 .dst(Unit::UNIT_REGISTER)
                 .di(0),
+            // Set sidecar tag
+            instr()
+                .src(Unit::UNIT_ABS_IMMEDIATE)
+                .si(tag_val)
+                .dst_reg_tag(0),
             // Read all three modes
             instr()
                 .src_reg(0)
@@ -2057,15 +2090,22 @@ mod property_tests {
         let val = helper.get_data_memory(101);
         let tag = helper.get_data_memory(102);
 
-        prop_assert_eq!(raw, value, "RAW should be the original value");
-        prop_assert_eq!(val | tag, raw, "VALUE | TAG should reconstruct RAW");
+        let expected_raw = ((tag_val as u64 & 0xF) << 32) | (value as u64);
+        prop_assert_eq!(raw, expected_raw,
+            "RAW should be (tag<<32)|value = {:#018x}, got {:#018x}", expected_raw, raw);
+        prop_assert_eq!(val, value as u64,
+            "VALUE should be the 32-bit value portion");
+        prop_assert_eq!(tag, (tag_val & 0xF) as u64,
+            "TAG should be the sidecar tag");
+        prop_assert_eq!((tag << 32) | val, raw,
+            "(TAG << 32) | VALUE should reconstruct RAW");
     }
 
-    /// Property: TAG write preserves payload, VALUE write preserves tag
+    /// Property: TAG write preserves value, VALUE write preserves tag (sidecar)
     #[test]
     fn prop_tag_value_write_independence(
         initial in data_value(),
-        new_tag in 0u32..4,
+        new_tag in 0u32..16,
         new_payload in data_value(),
     ) {
         let runtime = create_runtime().unwrap();
@@ -2080,13 +2120,13 @@ mod property_tests {
         tta.data_data_read_i = 0;
 
         let program = vec![
-            // Load initial value into r0
+            // Load initial value into r0 (tag=0 from ABS_OPERAND)
             instr()
                 .src(Unit::UNIT_ABS_OPERAND)
                 .soperand(initial)
                 .dst(Unit::UNIT_REGISTER)
                 .di(0),
-            // Write new tag (preserves payload)
+            // Write new sidecar tag (preserves 32-bit value)
             instr()
                 .src(Unit::UNIT_ABS_IMMEDIATE)
                 .si(new_tag as u8)
@@ -2096,7 +2136,7 @@ mod property_tests {
                 .src_reg(0)
                 .dst(Unit::UNIT_MEMORY_IMMEDIATE)
                 .di(100),
-            // Now write new payload (preserves tag)
+            // Now write new value (preserves sidecar tag)
             instr()
                 .src(Unit::UNIT_ABS_OPERAND)
                 .soperand(new_payload)
@@ -2119,28 +2159,26 @@ mod property_tests {
         let after_tag_write = helper.get_data_memory(100);
         let after_value_write = helper.get_data_memory(101);
 
-        // After TAG write: payload from initial, tag is new_tag
-        let expected_after_tag = (initial & !0x3) | (new_tag & 0x3);
+        // After TAG write: 32-bit value from initial, sidecar tag is new_tag
+        let expected_after_tag = ((new_tag as u64 & 0xF) << 32) | (initial as u64);
         prop_assert_eq!(after_tag_write, expected_after_tag,
-            "TAG write should preserve payload. initial={:#010x}, new_tag={}", initial, new_tag);
+            "TAG write should preserve value. initial={:#010x}, new_tag={}", initial, new_tag);
 
-        // After VALUE write: payload from new_payload, tag from previous (new_tag)
-        let expected_after_value = (new_payload & !0x3) | (new_tag & 0x3);
+        // After VALUE write: 32-bit value from new_payload, sidecar tag preserved (new_tag)
+        let expected_after_value = ((new_tag as u64 & 0xF) << 32) | (new_payload as u64);
         prop_assert_eq!(after_value_write, expected_after_value,
             "VALUE write should preserve tag. new_payload={:#010x}, tag should be {}", new_payload, new_tag);
     }
 
-    /// Property: DEREF reads from (reg & ~TAG_MASK) + offset
+    /// Property: DEREF reads from full 32-bit value + offset (tag is sidecar, not in address)
     #[test]
-    fn prop_deref_reads_at_untagged_address(
+    fn prop_deref_reads_at_address(
         base_addr in 4u32..200,
-        tag in 0u32..4,
+        tag in 0u8..16,
         offset in 0u8..4,
         stored_value in data_value(),
     ) {
-        // Ensure base address is tag-aligned (low bits must be 0 for tag to work)
-        let aligned_addr = base_addr & !0x3;
-        if aligned_addr == 0 { return Ok(()); } // skip addr 0
+        if base_addr == 0 { return Ok(()); } // skip addr 0
 
         let runtime = create_runtime().unwrap();
         let mut tta = runtime.create_model_simple::<TtaTestbench>().unwrap();
@@ -2153,19 +2191,22 @@ mod property_tests {
         tta.instr_data_read_i = 0;
         tta.data_data_read_i = 0;
 
-        // Pre-fill memory at the target address
-        helper.set_data_memory(aligned_addr + offset as u32, stored_value);
-
-        let tagged_ptr = aligned_addr | tag;
+        // Pre-fill memory at the target address (value as u64 with tag=0)
+        helper.set_data_memory(base_addr + offset as u32, stored_value as u64);
 
         let program = vec![
-            // Load tagged pointer into r0
+            // Load base address into r0 (tag=0 from ABS_OPERAND)
             instr()
                 .src(Unit::UNIT_ABS_OPERAND)
-                .soperand(tagged_ptr)
+                .soperand(base_addr)
                 .dst(Unit::UNIT_REGISTER)
                 .di(0),
-            // DEREF with offset
+            // Set sidecar tag (should NOT affect the address used by DEREF)
+            instr()
+                .src(Unit::UNIT_ABS_IMMEDIATE)
+                .si(tag)
+                .dst_reg_tag(0),
+            // DEREF with offset — uses full 32-bit value as address, tag is separate
             instr()
                 .src_deref(0, offset)
                 .dst(Unit::UNIT_MEMORY_IMMEDIATE)
@@ -2181,21 +2222,20 @@ mod property_tests {
         helper.run_for_cycles(&mut tta, 200);
 
         let result = helper.get_data_memory(250);
-        prop_assert_eq!(result, stored_value,
-            "DEREF of tagged_ptr={:#010x} (addr={}, tag={}) + offset={} should read value at addr {}",
-            tagged_ptr, aligned_addr, tag, offset, aligned_addr + offset as u32);
+        prop_assert_eq!(result, stored_value as u64,
+            "DEREF of addr={} (tag={}) + offset={} should read value at addr {}",
+            base_addr, tag, offset, base_addr + offset as u32);
     }
 
-    /// Property: DEREF write stores to (reg & ~TAG_MASK) + offset
+    /// Property: DEREF write stores to full 32-bit value + offset (tag is sidecar)
     #[test]
-    fn prop_deref_writes_at_untagged_address(
+    fn prop_deref_writes_at_address(
         base_addr in 4u32..200,
-        tag in 0u32..4,
+        tag in 0u8..16,
         offset in 0u8..4,
         write_value in data_value(),
     ) {
-        let aligned_addr = base_addr & !0x3;
-        if aligned_addr == 0 { return Ok(()); }
+        if base_addr == 0 { return Ok(()); }
 
         let runtime = create_runtime().unwrap();
         let mut tta = runtime.create_model_simple::<TtaTestbench>().unwrap();
@@ -2208,16 +2248,19 @@ mod property_tests {
         tta.instr_data_read_i = 0;
         tta.data_data_read_i = 0;
 
-        let tagged_ptr = aligned_addr | tag;
-
         let program = vec![
-            // Load tagged pointer into r0
+            // Load base address into r0 (tag=0 from ABS_OPERAND)
             instr()
                 .src(Unit::UNIT_ABS_OPERAND)
-                .soperand(tagged_ptr)
+                .soperand(base_addr)
                 .dst(Unit::UNIT_REGISTER)
                 .di(0),
-            // DEREF write: store write_value at (r0 & ~MASK) + offset
+            // Set sidecar tag (should NOT affect DEREF address)
+            instr()
+                .src(Unit::UNIT_ABS_IMMEDIATE)
+                .si(tag)
+                .dst_reg_tag(0),
+            // DEREF write: store write_value at base_addr + offset
             instr()
                 .src(Unit::UNIT_ABS_OPERAND)
                 .soperand(write_value)
@@ -2232,11 +2275,11 @@ mod property_tests {
         helper.run_until_reset_released(&mut tta).unwrap();
         helper.run_for_cycles(&mut tta, 200);
 
-        let target_addr = aligned_addr + offset as u32;
+        let target_addr = base_addr + offset as u32;
         let result = helper.get_data_memory(target_addr);
-        prop_assert_eq!(result, write_value,
-            "DEREF write via tagged_ptr={:#010x} + offset={} should store at addr {}",
-            tagged_ptr, offset, target_addr);
+        prop_assert_eq!(result, write_value as u64,
+            "DEREF write via addr={} (tag={}) + offset={} should store at addr {}",
+            base_addr, tag, offset, target_addr);
     }
 
     /// Property: COND register readback returns 0 or 1 matching what was set
@@ -2277,7 +2320,7 @@ mod property_tests {
         helper.run_for_cycles(&mut tta, 200);
 
         let result = helper.get_data_memory(100);
-        let expected = if value != 0 { 1u32 } else { 0u32 };
+        let expected = if value != 0 { 1u64 } else { 0u64 };
         prop_assert_eq!(result, expected,
             "COND readback after writing {} should be {}", value, expected);
     }
@@ -2327,8 +2370,8 @@ mod property_tests {
 
         // Sequencer advances PC past the instruction word before handing
         // off to execute, so instruction at address N sees PC = N+1.
-        prop_assert_eq!(pc_at_0, 1, "PC read at addr 0 should return 1");
-        prop_assert_eq!(pc_at_1, 2, "PC read at addr 1 should return 2");
+        prop_assert_eq!(pc_at_0, 1u64, "PC read at addr 0 should return 1");
+        prop_assert_eq!(pc_at_1, 2u64, "PC read at addr 1 should return 2");
     }
 
     /// Property: A taken branch flushes the prefetch and execution
@@ -2394,10 +2437,10 @@ mod property_tests {
         let mem100 = helper.get_data_memory(100);
         let mem102 = helper.get_data_memory(102);
 
-        prop_assert_eq!(mem100, 0x600D,
+        prop_assert_eq!(mem100, 0x600Du64,
             "Branch target at addr 4 should execute, not the skipped addr 2");
         // PC read at addr 6 (1-word instruction) should return 7
-        prop_assert_eq!(mem102, 7,
+        prop_assert_eq!(mem102, 7u64,
             "PC after branch should reflect correct execution address");
     }
 
@@ -2438,14 +2481,16 @@ mod property_tests {
         helper.run_for_cycles(&mut tta, 200);
 
         let result = helper.get_data_memory(100);
-        prop_assert_eq!(result, 42, "Instruction after no-ops should execute normally");
+        prop_assert_eq!(result, 42u64, "Instruction after no-ops should execute normally");
     }
 
-    /// Property: Lisp-style pattern — DEREF car, check tag, conditional branch
+    /// Property: Lisp-style pattern — DEREF car, check sidecar tag, conditional branch
     #[test]
     fn prop_lisp_car_tag_branch(
-        car_value in data_value(),
-        cdr_value in data_value(),
+        car_val in data_value(),
+        car_tag in 0u8..16,
+        cdr_val in data_value(),
+        cdr_tag in 0u8..16,
     ) {
         let runtime = create_runtime().unwrap();
         let mut tta = runtime.create_model_simple::<TtaTestbench>().unwrap();
@@ -2458,28 +2503,37 @@ mod property_tests {
         tta.instr_data_read_i = 0;
         tta.data_data_read_i = 0;
 
-        // Cons cell at word address 40: car=car_value, cdr=cdr_value
-        helper.set_data_memory(40, car_value);
-        helper.set_data_memory(41, cdr_value);
+        // Cons cell at word address 40: car and cdr are 36-bit tagged values
+        let car_tagged = ((car_tag as u64) << 32) | (car_val as u64);
+        let cdr_tagged = ((cdr_tag as u64) << 32) | (cdr_val as u64);
+        helper.set_data_memory(40, car_tagged);
+        helper.set_data_memory(41, cdr_tagged);
 
-        let cons_ptr = 40u32 | 1; // tag 1 = cons
+        // Pointer to cons cell: address=40, with sidecar tag=1 (cons tag)
+        // With sidecar tags, the address is the full 32-bit value, tag is separate
+        let cons_addr = 40u32;
 
         // Program:
-        //   0-1: load cons_ptr into r0
-        //   2:   DEREF r0+0 (car) → r1
-        //   3:   DEREF r0+1 (cdr) → r2
-        //   4:   read TAG of r1 → COND (branch if car has nonzero tag)
-        //   5-6: conditional jump to addr 8
-        //   7:   store 0xAAAA to mem[200] (car tag is 0 path)
-        //   8:   store 0xBBBB to mem[201] (always reached)
-        //   9:   store r1 RAW to mem[202] (verify car value)
-        //   10:  store r2 RAW to mem[203] (verify cdr value)
+        //   0-1: load cons_addr into r0
+        //   2:   set r0 tag to 1 (cons tag)
+        //   3:   DEREF r0+0 (car) → r1 (uses 32-bit value=40 as address)
+        //   4:   DEREF r0+1 (cdr) → r2
+        //   5:   read TAG of r1 → COND (branch if car has nonzero sidecar tag)
+        //   6-7: conditional jump to addr 9
+        //   8:   store 0xAAAA to mem[200] (car tag is 0 path)
+        //   9:   store 0xBBBB to mem[201] (always reached)
+        //   10:  store r1 RAW to mem[202] (verify car value)
+        //   11:  store r2 RAW to mem[203] (verify cdr value)
         let program = vec![
             instr()
                 .src(Unit::UNIT_ABS_OPERAND)
-                .soperand(cons_ptr)
+                .soperand(cons_addr)
                 .dst(Unit::UNIT_REGISTER)
                 .di(0),
+            instr()
+                .src(Unit::UNIT_ABS_IMMEDIATE)
+                .si(1) // cons tag
+                .dst_reg_tag(0),
             instr()
                 .src_deref(0, 0)
                 .dst(Unit::UNIT_REGISTER)
@@ -2493,15 +2547,15 @@ mod property_tests {
                 .dst(Unit::UNIT_COND),
             instr()
                 .src(Unit::UNIT_ABS_OPERAND)
-                .soperand(8)
+                .soperand(9)
                 .dst(Unit::UNIT_PC_COND),
-            // addr 7: only reached if car tag == 0
+            // addr 8: only reached if car sidecar tag == 0
             instr()
                 .src(Unit::UNIT_ABS_OPERAND)
                 .soperand(0xAAAA)
                 .dst(Unit::UNIT_MEMORY_IMMEDIATE)
                 .di(200),
-            // addr 8: always reached
+            // addr 9: always reached
             instr()
                 .src(Unit::UNIT_ABS_OPERAND)
                 .soperand(0xBBBB)
@@ -2531,21 +2585,20 @@ mod property_tests {
         let stored_car = helper.get_data_memory(202);
         let stored_cdr = helper.get_data_memory(203);
 
-        // Verify car/cdr were loaded correctly
-        prop_assert_eq!(stored_car, car_value,
+        // Verify car/cdr were loaded correctly (full 36-bit tagged values)
+        prop_assert_eq!(stored_car, car_tagged,
             "car should be loaded from mem[40]");
-        prop_assert_eq!(stored_cdr, cdr_value,
+        prop_assert_eq!(stored_cdr, cdr_tagged,
             "cdr should be loaded from mem[41]");
 
-        // Verify branch behavior based on car's tag
-        let car_tag = car_value & 0x3;
-        prop_assert_eq!(mem201, 0xBBBB, "addr 8 should always execute");
+        // Verify branch behavior based on car's sidecar tag (bits [35:32])
+        prop_assert_eq!(mem201, 0xBBBBu64, "addr 9 should always execute");
         if car_tag != 0 {
-            prop_assert_eq!(mem200, 0,
-                "car tag={}: branch taken, addr 7 should be skipped", car_tag);
+            prop_assert_eq!(mem200, 0u64,
+                "car tag={}: branch taken, addr 8 should be skipped", car_tag);
         } else {
-            prop_assert_eq!(mem200, 0xAAAA,
-                "car tag=0: branch not taken, addr 7 should execute");
+            prop_assert_eq!(mem200, 0xAAAAu64,
+                "car tag=0: branch not taken, addr 8 should execute");
         }
     }
 
@@ -2619,15 +2672,15 @@ mod property_tests {
         let mem100 = helper.get_data_memory(100);
         let mem101 = helper.get_data_memory(101);
 
-        prop_assert_eq!(mem101, 0xD0E, "addr 8 should always execute");
+        prop_assert_eq!(mem101, 0xD0Eu64, "addr 8 should always execute");
         if expected_result != 0 {
             // Branch taken — addr 6-7 should be skipped (mem100 stays 0)
-            prop_assert_eq!(mem100, 0,
+            prop_assert_eq!(mem100, 0u64,
                 "Comparison true (a={}, b={}, op={}): branch taken, addr 6 skipped",
                 a, b, op_idx);
         } else {
             // Branch not taken — addr 6 should execute
-            prop_assert_eq!(mem100, 0xFAF,
+            prop_assert_eq!(mem100, 0xFAFu64,
                 "Comparison false (a={}, b={}, op={}): branch not taken, addr 6 should write marker",
                 a, b, op_idx);
         }
@@ -2685,9 +2738,9 @@ mod property_tests {
         helper.run_until_reset_released(&mut tta).unwrap();
         helper.run_for_cycles(&mut tta, 300);
 
-        prop_assert_eq!(helper.get_data_memory(100), 0x11,
+        prop_assert_eq!(helper.get_data_memory(100), 0x11u64,
             "After taken then not-taken branch, addr 8 should write 0x11");
-        prop_assert_eq!(helper.get_data_memory(101), 0x22,
+        prop_assert_eq!(helper.get_data_memory(101), 0x22u64,
             "Addr 9 should execute after the not-taken branch");
     }
 
@@ -2744,13 +2797,13 @@ mod property_tests {
         helper.run_until_reset_released(&mut tta).unwrap();
         helper.run_for_cycles(&mut tta, 300);
 
-        prop_assert_eq!(helper.get_data_memory(100), 0xAC,
+        prop_assert_eq!(helper.get_data_memory(100), 0xACu64,
             "Branch target should write 0xAC");
-        prop_assert_eq!(helper.get_data_memory(101), 0xBE,
+        prop_assert_eq!(helper.get_data_memory(101), 0xBEu64,
             "Instruction after branch target should execute");
-        prop_assert_eq!(helper.get_data_memory(210), 0,
+        prop_assert_eq!(helper.get_data_memory(210), 0u64,
             "Wrong-path store to mem[210] should never have executed");
-        prop_assert_eq!(helper.get_data_memory(211), 0,
+        prop_assert_eq!(helper.get_data_memory(211), 0u64,
             "Wrong-path store to mem[211] should never have executed");
     }
 
@@ -2772,8 +2825,8 @@ mod property_tests {
         tta.instr_data_read_i = 0;
         tta.data_data_read_i = 0;
 
-        // Pre-fill data memory
-        helper.set_data_memory(50, value);
+        // Pre-fill data memory (value as u64, tag=0)
+        helper.set_data_memory(50, value as u64);
 
         // Instruction 1 (addr 0): memory load from addr 50 → register 0
         //   This is a multi-cycle execute (bus read through data_bus).
@@ -2800,7 +2853,7 @@ mod property_tests {
         helper.run_for_cycles(&mut tta, 200);
 
         let result = helper.get_data_memory(200);
-        prop_assert_eq!(result, value,
+        prop_assert_eq!(result, value as u64,
             "Prefetched instruction after multi-cycle execute should read correct value from register");
     }
 
@@ -2852,13 +2905,13 @@ mod property_tests {
         helper.run_until_reset_released(&mut tta).unwrap();
         helper.run_for_cycles(&mut tta, 300);
 
-        prop_assert_eq!(helper.get_data_memory(100), 1,
+        prop_assert_eq!(helper.get_data_memory(100), 1u64,
             "PC at addr 0 should be 1 (not overwritten by skipped addr 3)");
-        prop_assert_eq!(helper.get_data_memory(101), 6,
+        prop_assert_eq!(helper.get_data_memory(101), 6u64,
             "PC at branch target (addr 5) should be 6");
-        prop_assert_eq!(helper.get_data_memory(102), 0x42,
+        prop_assert_eq!(helper.get_data_memory(102), 0x42u64,
             "2-word instruction after branch should execute correctly");
-        prop_assert_eq!(helper.get_data_memory(103), 9,
+        prop_assert_eq!(helper.get_data_memory(103), 9u64,
             "PC at addr 8 (after 2-word instr at addr 6-7) should be 9");
     }
 
@@ -2918,13 +2971,13 @@ mod property_tests {
         helper.run_until_reset_released(&mut tta).unwrap();
         helper.run_for_cycles(&mut tta, 300);
 
-        prop_assert_eq!(helper.get_data_memory(100), 0x99,
+        prop_assert_eq!(helper.get_data_memory(100), 0x99u64,
             "Only the final branch target should write to mem[100]");
-        prop_assert_eq!(helper.get_data_memory(101), 10,
+        prop_assert_eq!(helper.get_data_memory(101), 10u64,
             "PC at addr 9 should be 10 after two consecutive jumps");
-        prop_assert_eq!(helper.get_data_memory(210), 0,
+        prop_assert_eq!(helper.get_data_memory(210), 0u64,
             "Wrong-path store after first jump should never execute");
-        prop_assert_eq!(helper.get_data_memory(211), 0,
+        prop_assert_eq!(helper.get_data_memory(211), 0u64,
             "Wrong-path store after second jump should never execute");
     }
 

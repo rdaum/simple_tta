@@ -30,22 +30,22 @@ module tta #(
     input  logic        instr_ready_i,
     input  logic [31:0] instr_read_data_i,
 
-    // Data bus
+    // Data bus (36-bit data, 32-bit address)
     output logic [3:0]  data_wstrb_o,
-    output logic [31:0] data_write_data_o,
+    output logic [DATA_WIDTH-1:0] data_write_data_o,
     output logic [31:0] data_addr_o,
     output logic        data_valid_o,
     output logic        data_instr_o,
     input  logic        data_ready_i,
-    input  logic [31:0] data_read_data_i
+    input  logic [DATA_WIDTH-1:0] data_read_data_i
 );
 
   // pc is the instruction PC promoted from the queue on accept. Execute
   // reads it as pc_i for UNIT_PC, getting (instruction_addr + word_count).
   // The fetch address is tracked separately inside the sequencer.
   logic [31:0] pc;
-  logic [31:0] src_operand;
-  logic [31:0] dst_operand;
+  logic [DATA_WIDTH-1:0] src_operand;
+  logic [DATA_WIDTH-1:0] dst_operand;
   logic [31:0] op;
   logic done_exec;
 

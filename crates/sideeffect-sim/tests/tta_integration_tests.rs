@@ -12,7 +12,7 @@ fn create_runtime() -> Result<VerilatorRuntime, Box<dyn std::error::Error>> {
 struct TtaTestHelper {
     cycle_count: u32,
     instruction_memory: HashMap<u32, u32>,
-    data_memory: HashMap<u32, u32>,
+    data_memory: HashMap<u32, u64>,
 }
 
 impl TtaTestHelper {
@@ -46,22 +46,26 @@ impl TtaTestHelper {
         }
 
         // Drive data bus: assert ready only when responding to valid.
+        // Data bus is 36 bits (u64): bits [31:0] = value, bits [35:32] = tag.
         if tta.data_valid_o != 0 {
             let addr = tta.data_addr_o;
             let wstrb = tta.data_wstrb_o as u8;
             if wstrb != 0 {
-                // Write operation with per-byte strobes
+                // Write operation with per-byte strobes on low 32 bits;
+                // tag (bits [35:32]) is written when any strobe is active.
                 let existing = *self.data_memory.get(&addr).unwrap_or(&0);
-                let mut bytes = existing.to_le_bytes();
-                let write_bytes = tta.data_data_write_o.to_le_bytes();
+                let write_val = tta.data_data_write_o;
+                let mut bytes = (existing as u32).to_le_bytes();
+                let write_bytes = (write_val as u32).to_le_bytes();
                 for i in 0..4 {
                     if (wstrb & (1 << i)) != 0 {
                         bytes[i] = write_bytes[i];
                     }
                 }
-                self.data_memory.insert(addr, u32::from_le_bytes(bytes));
+                let tag = write_val & 0xF_0000_0000;
+                self.data_memory.insert(addr, tag | u32::from_le_bytes(bytes) as u64);
             } else {
-                // Read operation
+                // Read operation — return full 36-bit value
                 tta.data_data_read_i = *self.data_memory.get(&addr).unwrap_or(&0);
             }
             tta.data_ready_i = 1;
@@ -110,8 +114,8 @@ impl TtaTestHelper {
         }
     }
 
-    /// Set data memory value
-    fn set_data_memory(&mut self, addr: u32, value: u32) {
+    /// Set data memory value (36-bit: low 32 = value, bits [35:32] = tag)
+    fn set_data_memory(&mut self, addr: u32, value: u64) {
         self.data_memory.insert(addr, value);
     }
 
@@ -127,8 +131,8 @@ impl TtaTestHelper {
         None
     }
 
-    /// Get data memory value
-    fn get_data_memory(&self, addr: u32) -> u32 {
+    /// Get data memory value (36-bit)
+    fn get_data_memory(&self, addr: u32) -> u64 {
         *self.data_memory.get(&addr).unwrap_or(&0)
     }
 
@@ -315,8 +319,8 @@ mod tests {
         tta.instr_data_read_i = 0;
         tta.data_data_read_i = 0;
 
-        // 1. Store 666 to memory[124] (tag-aligned address)
-        // 2. Store 124 to register[1] (pointer, tag bits = 0)
+        // 1. Store 666 to memory[124]
+        // 2. Store 124 to register[1] (pointer, tag = 0)
         // 3. Load from register[1] via DEREF to memory[200]
         let program = vec![
             instr()
@@ -1534,7 +1538,7 @@ mod tests {
         tta.instr_data_read_i = 0;
         tta.data_data_read_i = 0;
 
-        // Pre-fill memory word at address 44 (tag-aligned) with 0x44332211
+        // Pre-fill memory word at address 44 with 0x44332211
         helper.set_data_memory(44, 0x44332211);
 
         // Load address 44 into register 0, then read word via DEREF
@@ -1859,26 +1863,34 @@ mod tests {
         tta.instr_data_read_i = 0;
         tta.data_data_read_i = 0;
 
-        // Store a tagged value 0xDEADBEE1 into register 0 (tag = 1, value = 0xDEADBEE0)
+        // Store 0xDEADBEEF into register 0 as the 32-bit value, then set tag = 1.
         // Then read tag and value separately.
+        // With sidecar tags: value is in bits [31:0], tag is in bits [35:32].
+        // REG_TAG read returns the tag in low bits of the value portion (tag=0).
+        // REG_VALUE read returns the 32-bit value with tag zeroed.
         let program = vec![
-            // addr 0-1: load tagged value into r0 (RAW mode)
+            // addr 0-1: load 0xDEADBEEF into r0 value
             instr()
                 .src(Unit::UNIT_ABS_OPERAND)
-                .soperand(0xDEADBEE1)
+                .soperand(0xDEADBEEF)
                 .dst(Unit::UNIT_REGISTER)
                 .di(0),
-            // addr 2: read TAG of r0 → mem[100]
+            // addr 2: set tag = 1 on r0
+            instr()
+                .src(Unit::UNIT_ABS_IMMEDIATE)
+                .si(1)
+                .dst_reg_tag(0),
+            // addr 3: read TAG of r0 → mem[100]
             instr()
                 .src_reg_tag(0)
                 .dst(Unit::UNIT_MEMORY_IMMEDIATE)
                 .di(100),
-            // addr 3: read VALUE of r0 → mem[101]
+            // addr 4: read VALUE of r0 → mem[101]
             instr()
                 .src_reg_value(0)
                 .dst(Unit::UNIT_MEMORY_IMMEDIATE)
                 .di(101),
-            // addr 4: read RAW of r0 → mem[102]
+            // addr 5: read RAW of r0 → mem[102]
             instr()
                 .src_reg(0)
                 .dst(Unit::UNIT_MEMORY_IMMEDIATE)
@@ -1897,9 +1909,9 @@ mod tests {
         let value = helper.get_data_memory(101);
         let raw = helper.get_data_memory(102);
 
-        assert_eq!(tag, 1, "Tag of 0xDEADBEE1 should be 1 (low 2 bits)");
-        assert_eq!(value, 0xDEADBEE0, "Value should be 0xDEADBEE0 (tag bits zeroed)");
-        assert_eq!(raw, 0xDEADBEE1, "Raw should be the full tagged word");
+        assert_eq!(tag, 1, "TAG read should return tag value (1) in low bits");
+        assert_eq!(value, 0xDEADBEEF, "VALUE read should return the 32-bit value (tag zeroed)");
+        assert_eq!(raw, (1u64 << 32) | 0xDEADBEEF, "RAW should be the full 36-bit word");
 
         Ok(())
     }
@@ -1920,8 +1932,8 @@ mod tests {
         tta.data_data_read_i = 0;
 
         // Store 0xCAFE0000 into r0 (tag = 0).
-        // Then write tag = 2 via TAG mode (should preserve payload).
-        // Then read raw to verify.
+        // Then write tag = 2 via TAG mode (should preserve 32-bit value).
+        // Then read raw to verify tag is in bits [35:32].
         let program = vec![
             // Load 0xCAFE0000 into r0
             instr()
@@ -1950,7 +1962,7 @@ mod tests {
         helper.run_for_cycles(&mut tta, 200);
 
         let result = helper.get_data_memory(100);
-        assert_eq!(result, 0xCAFE0002, "Payload should be preserved, tag should be 2");
+        assert_eq!(result, (2u64 << 32) | 0xCAFE0000, "Payload should be preserved, tag 2 in bits [35:32]");
 
         Ok(())
     }
@@ -1970,18 +1982,26 @@ mod tests {
         tta.instr_data_read_i = 0;
         tta.data_data_read_i = 0;
 
-        // Store 0x00000003 into r0 (tag = 3, payload = 0).
-        // Then write value 0xBEEF0000 via VALUE mode (should preserve tag).
+        // Set tag = 3 on r0 (value = 0), then write value 0xBEEF0000
+        // via VALUE mode (should preserve tag in bits [35:32]).
         let program = vec![
+            // Start with value 0 in r0
+            instr()
+                .src(Unit::UNIT_ABS_IMMEDIATE)
+                .si(0)
+                .dst(Unit::UNIT_REGISTER)
+                .di(0),
+            // Set tag = 3
             instr()
                 .src(Unit::UNIT_ABS_IMMEDIATE)
                 .si(3)
-                .dst(Unit::UNIT_REGISTER)
-                .di(0),
+                .dst_reg_tag(0),
+            // Write value 0xBEEF0000 via VALUE mode (preserves tag)
             instr()
                 .src(Unit::UNIT_ABS_OPERAND)
                 .soperand(0xBEEF0000)
                 .dst_reg_value(0),
+            // Read raw r0 → mem[100]
             instr()
                 .src_reg(0)
                 .dst(Unit::UNIT_MEMORY_IMMEDIATE)
@@ -1997,7 +2017,7 @@ mod tests {
         helper.run_for_cycles(&mut tta, 200);
 
         let result = helper.get_data_memory(100);
-        assert_eq!(result, 0xBEEF0003, "Tag 3 should be preserved, payload updated");
+        assert_eq!(result, (3u64 << 32) | 0xBEEF0000, "Tag 3 should be preserved in bits [35:32], value updated");
 
         Ok(())
     }
@@ -2018,28 +2038,27 @@ mod tests {
         tta.data_data_read_i = 0;
 
         // Simulate a cons cell at word address 20:
-        //   mem[20] = 0x0000002A (car = 42)
-        //   mem[21] = 0x00000063 (cdr = 99)
+        //   mem[20] = 42 (car)
+        //   mem[21] = 99 (cdr)
         helper.set_data_memory(20, 42);
         helper.set_data_memory(21, 99);
 
-        // Load tagged cons pointer into r0: address 20 | tag 1 = 0x00000051
-        // (20 << 0 is 20, but with 2-bit tags, address 20 must be tag-aligned:
-        //  20 = 0x14, low 2 bits = 0, so tagged = 0x14 | 1 = 0x15 = 21... no)
-        //
-        // Wait — the address IS the word address, and the tag lives in the low
-        // bits. So the tagged pointer is (word_address | tag). For word address
-        // 20 = 0x14, the low 2 bits are 0, so 0x14 | 1 = 0x15. Stripping the
-        // tag: 0x15 & ~3 = 0x14 = 20. Correct.
-        let cons_ptr = 20u32 | 1; // word address 20, tag 1 (cons)
-
+        // With sidecar tags, the address is the full 32-bit value and the
+        // tag lives in bits [35:32]. DEREF uses the 32-bit value directly
+        // as the address (no tag stripping). So we load address 20 into r0
+        // and set tag = 1 (cons) via dst_reg_tag.
         let program = vec![
-            // Load tagged pointer into r0
+            // Load address 20 into r0
             instr()
-                .src(Unit::UNIT_ABS_OPERAND)
-                .soperand(cons_ptr)
+                .src(Unit::UNIT_ABS_IMMEDIATE)
+                .si(20)
                 .dst(Unit::UNIT_REGISTER)
                 .di(0),
+            // Set tag = 1 (cons) on r0
+            instr()
+                .src(Unit::UNIT_ABS_IMMEDIATE)
+                .si(1)
+                .dst_reg_tag(0),
             // DEREF r0 offset 0 (car) → mem[100]
             instr()
                 .src_deref(0, 0)
@@ -2085,15 +2104,19 @@ mod tests {
         tta.data_data_read_i = 0;
 
         // Write car and cdr of a cons cell via DEREF destination.
-        let cons_ptr = 24u32 | 1; // word address 24, tag 1
-
+        // With sidecar tags: address 24 in 32-bit value, tag 1 in bits [35:32].
         let program = vec![
-            // Load tagged pointer into r0
+            // Load address 24 into r0
             instr()
-                .src(Unit::UNIT_ABS_OPERAND)
-                .soperand(cons_ptr)
+                .src(Unit::UNIT_ABS_IMMEDIATE)
+                .si(24)
                 .dst(Unit::UNIT_REGISTER)
                 .di(0),
+            // Set tag = 1 on r0
+            instr()
+                .src(Unit::UNIT_ABS_IMMEDIATE)
+                .si(1)
+                .dst_reg_tag(0),
             // Write 777 to car (deref r0 + 0)
             instr()
                 .src(Unit::UNIT_ABS_OPERAND)
@@ -2746,8 +2769,7 @@ mod tests {
             // 16: reg TAG → reg (1-word, fused)
             instr().src_reg_tag(0).dst(Unit::UNIT_REGISTER).di(6),
             // 17: reg DEREF → reg (1-word, multi-cycle — bus read via tagged ptr)
-            // (need a valid tagged pointer first — use reg 0 which has 42)
-            // Actually 42 has tag=2, payload=40. mem[40] might be 0. That's fine for timing.
+            // (reg 0 has value 42, tag=0. DEREF reads mem[42]. That's fine for timing.)
             instr().src_deref(0, 0).dst(Unit::UNIT_REGISTER).di(7),
         ];
 
@@ -3104,23 +3126,49 @@ mod tests {
         tta.instr_data_read_i = 0;
         tta.data_data_read_i = 0;
 
-        // Push a tagged value (0x15 = addr 0x14 | tag 1) onto stack 0 three times.
-        // Pop RAW, pop VALUE, pop TAG — verify each.
-        let tagged_val: u32 = 0x14 | 1; // addr 20 | tag 1
+        // Push a tagged value onto stack 0 three times.
+        // With sidecar tags: value 20 (0x14) with tag 1 is stored as
+        // ((1 << 32) | 20) in the 36-bit register, but push_immediate
+        // only pushes a 32-bit operand (tag=0). To get a tagged value
+        // on the stack, we load the value into a register, set the tag,
+        // then push the register to the stack.
         let program = vec![
-            instr().push_immediate(0, tagged_val),
-            instr().push_immediate(0, tagged_val),
-            instr().push_immediate(0, tagged_val),
-            // Pop RAW → r0
-            instr().src_pop(0).dst(Unit::UNIT_REGISTER).di(0),
-            // Pop VALUE → r1 (tag zeroed)
-            instr().src_pop_value(0).dst(Unit::UNIT_REGISTER).di(1),
-            // Pop TAG → r2 (tag only)
-            instr().src_pop_tag(0).dst(Unit::UNIT_REGISTER).di(2),
+            // Load value 20 into r0, set tag = 1
+            instr()
+                .src(Unit::UNIT_ABS_IMMEDIATE)
+                .si(20)
+                .dst(Unit::UNIT_REGISTER)
+                .di(0),
+            instr()
+                .src(Unit::UNIT_ABS_IMMEDIATE)
+                .si(1)
+                .dst_reg_tag(0),
+            // Push r0 to stack three times
+            instr()
+                .src(Unit::UNIT_REGISTER)
+                .si(0)
+                .dst(Unit::UNIT_STACK_PUSH_POP)
+                .di(0),
+            instr()
+                .src(Unit::UNIT_REGISTER)
+                .si(0)
+                .dst(Unit::UNIT_STACK_PUSH_POP)
+                .di(0),
+            instr()
+                .src(Unit::UNIT_REGISTER)
+                .si(0)
+                .dst(Unit::UNIT_STACK_PUSH_POP)
+                .di(0),
+            // Pop RAW → r1
+            instr().src_pop(0).dst(Unit::UNIT_REGISTER).di(1),
+            // Pop VALUE → r2 (tag zeroed)
+            instr().src_pop_value(0).dst(Unit::UNIT_REGISTER).di(2),
+            // Pop TAG → r3 (tag only in low bits)
+            instr().src_pop_tag(0).dst(Unit::UNIT_REGISTER).di(3),
             // Store results
-            instr().src(Unit::UNIT_REGISTER).si(0).dst(Unit::UNIT_MEMORY_IMMEDIATE).di(100),
-            instr().src(Unit::UNIT_REGISTER).si(1).dst(Unit::UNIT_MEMORY_IMMEDIATE).di(101),
-            instr().src(Unit::UNIT_REGISTER).si(2).dst(Unit::UNIT_MEMORY_IMMEDIATE).di(102),
+            instr().src(Unit::UNIT_REGISTER).si(1).dst(Unit::UNIT_MEMORY_IMMEDIATE).di(100),
+            instr().src(Unit::UNIT_REGISTER).si(2).dst(Unit::UNIT_MEMORY_IMMEDIATE).di(101),
+            instr().src(Unit::UNIT_REGISTER).si(3).dst(Unit::UNIT_MEMORY_IMMEDIATE).di(102),
         ];
 
         let mut machine_code = Vec::new();
@@ -3131,9 +3179,12 @@ mod tests {
         helper.run_until_reset_released(&mut tta)?;
         helper.run_for_cycles(&mut tta, 300);
 
-        assert_eq!(helper.get_data_memory(100), tagged_val, "RAW pop should return full value");
-        assert_eq!(helper.get_data_memory(101), tagged_val & !3, "VALUE pop should zero tag bits");
-        assert_eq!(helper.get_data_memory(102), tagged_val & 3, "TAG pop should return tag bits only");
+        // RAW pop returns full 36-bit value: tag 1 in bits [35:32], value 20 in [31:0]
+        assert_eq!(helper.get_data_memory(100), (1u64 << 32) | 20, "RAW pop should return full 36-bit tagged value");
+        // VALUE pop returns the 32-bit value with tag zeroed
+        assert_eq!(helper.get_data_memory(101), 20, "VALUE pop should return value with tag zeroed");
+        // TAG pop returns tag in low bits of value portion
+        assert_eq!(helper.get_data_memory(102), 1, "TAG pop should return tag value in low bits");
 
         Ok(())
     }
@@ -3153,18 +3204,35 @@ mod tests {
         tta.instr_data_read_i = 0;
         tta.data_data_read_i = 0;
 
-        let tagged_val: u32 = 0x14 | 2; // addr 20 | tag 2
+        // Push a tagged value: value 20 (0x14) with tag 2 in bits [35:32].
+        // We need to build the tagged value via register + tag write,
+        // then push the register to the stack.
         let program = vec![
-            instr().push_immediate(0, tagged_val),
+            // Load value 20 into r0, set tag = 2
+            instr()
+                .src(Unit::UNIT_ABS_IMMEDIATE)
+                .si(20)
+                .dst(Unit::UNIT_REGISTER)
+                .di(0),
+            instr()
+                .src(Unit::UNIT_ABS_IMMEDIATE)
+                .si(2)
+                .dst_reg_tag(0),
+            // Push r0 to stack
+            instr()
+                .src(Unit::UNIT_REGISTER)
+                .si(0)
+                .dst(Unit::UNIT_STACK_PUSH_POP)
+                .di(0),
             // Peek TAG at offset 0 → cond
             instr().src_peek_tag(0, 0).dst(Unit::UNIT_COND),
-            // Read cond → r0
-            instr().src(Unit::UNIT_COND).dst(Unit::UNIT_REGISTER).di(0),
-            // Peek VALUE at offset 0 → r1
-            instr().src_peek_value(0, 0).dst(Unit::UNIT_REGISTER).di(1),
+            // Read cond → r1
+            instr().src(Unit::UNIT_COND).dst(Unit::UNIT_REGISTER).di(1),
+            // Peek VALUE at offset 0 → r2
+            instr().src_peek_value(0, 0).dst(Unit::UNIT_REGISTER).di(2),
             // Store results
-            instr().src(Unit::UNIT_REGISTER).si(0).dst(Unit::UNIT_MEMORY_IMMEDIATE).di(100),
-            instr().src(Unit::UNIT_REGISTER).si(1).dst(Unit::UNIT_MEMORY_IMMEDIATE).di(101),
+            instr().src(Unit::UNIT_REGISTER).si(1).dst(Unit::UNIT_MEMORY_IMMEDIATE).di(100),
+            instr().src(Unit::UNIT_REGISTER).si(2).dst(Unit::UNIT_MEMORY_IMMEDIATE).di(101),
         ];
 
         let mut machine_code = Vec::new();
@@ -3177,8 +3245,8 @@ mod tests {
 
         // Tag is 2 (nonzero), so cond should be 1
         assert_eq!(helper.get_data_memory(100), 1, "TAG peek should set cond (tag=2 is nonzero)");
-        // VALUE should be addr with tag zeroed
-        assert_eq!(helper.get_data_memory(101), 0x14, "VALUE peek should zero tag bits");
+        // VALUE should be the 32-bit value with tag zeroed
+        assert_eq!(helper.get_data_memory(101), 20, "VALUE peek should return 32-bit value (tag zeroed)");
 
         Ok(())
     }

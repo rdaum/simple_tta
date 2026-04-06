@@ -1,9 +1,13 @@
+`include "rtl/common.vh"
+
+// SoC-style simulation top with boot ROM and external SRAM modeling.
+// Port widths use literals (not parameters) for Verilator/Marlin macro compat.
 module simtop (
     input wire rst_i,
     input wire sysclk_i,
 
-    input logic [31:0] sram_data_i,
-    output logic [31:0] sram_data_o,
+    input logic [35:0] sram_data_i,
+    output logic [35:0] sram_data_o,
     output logic [18:0] sram_addr_o,
     output logic sram_valid_o,
     output logic [3:0] sram_wstrb_o,
@@ -13,7 +17,7 @@ module simtop (
     output wire uart_txd_o
 );
 
-    // Instruction bus wires (sequencer ↔ blkram)
+    // Instruction bus wires (sequencer -> blkram, 32-bit)
     wire [3:0]  ibs_wstrb;
     wire [31:0] ibs_write_data;
     wire [31:0] ibs_addr;
@@ -37,9 +41,9 @@ module simtop (
         .bus_read_data_o(ibs_read_data)
     );
 
-    // Data bus wires (execute ↔ SRAM)
+    // Data bus wires (execute -> SRAM, 36-bit data)
     wire [3:0]  dbs_wstrb;
-    wire [31:0] dbs_write_data;
+    wire [35:0] dbs_write_data;
     wire [31:0] dbs_addr;
     wire        dbs_valid;
 
@@ -54,7 +58,6 @@ module simtop (
         .rst_i(rst_i),
         .clk_i(sysclk_i),
         .instr_done_o(),
-        // Instruction bus → blkram
         .instr_wstrb_o(ibs_wstrb),
         .instr_write_data_o(ibs_write_data),
         .instr_addr_o(ibs_addr),
@@ -62,7 +65,6 @@ module simtop (
         .instr_instr_o(ibs_instr),
         .instr_ready_i(ibs_ready),
         .instr_read_data_i(ibs_read_data),
-        // Data bus → SRAM
         .data_wstrb_o(dbs_wstrb),
         .data_write_data_o(dbs_write_data),
         .data_addr_o(dbs_addr),
@@ -72,4 +74,4 @@ module simtop (
         .data_read_data_i(sram_data_i)
     );
 
-endmodule : simtop
+endmodule

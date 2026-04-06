@@ -1,6 +1,6 @@
 ## What is this?
 
-A 32-bit soft processor core with a [Transport Triggered
+A 36-bit tagged soft processor core with a [Transport Triggered
 Architecture](https://en.wikipedia.org/wiki/Transport_triggered_architecture),
 written in synthesizable Verilog. It targets FPGAs as a
 programmable coprocessor for language runtimes, with native
@@ -37,11 +37,17 @@ functional units. The programmer (or compiler) explicitly
 schedules operations across ALU lanes — there is no hardware
 hazard detection or out-of-order execution.
 
-**Tagged values:** registers and stacks natively support tagged
-values (2-bit low tags by default). A single-move DEREF mode
-strips the tag, adds an offset, and loads from memory — enabling
-`(car x)` in one instruction. Type dispatch is two instructions
-(peek tag → branch).
+**36-bit tagged values:** every register, stack slot, and memory
+word is 36 bits — a 32-bit value plus a 4-bit sidecar tag in
+bits [35:32]. The tag is *alongside* the value, not inside it,
+so addresses are always clean 32-bit integers with no masking.
+4 tag bits give 16 types — enough for a real Lisp or Lua runtime.
+A single-move DEREF loads from memory using the 32-bit value as
+an address, enabling `(car x)` in one instruction. Type dispatch
+is two instructions (read tag → branch). The ALU operates on the
+32-bit value portion and preserves the left operand's tag in the
+result. Tags align naturally with FPGA block RAM (36-bit native
+width on Xilinx 7-series).
 
 **Predication:** any instruction can be conditionally executed
 based on the condition register, without a branch. This avoids
@@ -84,9 +90,9 @@ destination require an extended operand.
 | 1 | `STACK` | Pop from stack N | Push to stack N |
 | 2 | `STACK_INDEX` | Peek at offset in stack N | Poke at offset in stack N |
 | 3 | `REG` | Read register N (raw) | Write register N (raw) |
-| 4 | `REG_VALUE` | Read with tag bits zeroed | Write preserving tag |
-| 5 | `REG_TAG` | Read tag bits only | Write preserving payload |
-| 6 | `REG_DEREF` | Strip tag, load mem[addr+offset] | Strip tag, store to mem[addr+offset] |
+| 4 | `REG_VALUE` | Read 32-bit value (tag zeroed) | Write value, preserve tag |
+| 5 | `REG_TAG` | Read 4-bit tag (zero-extended) | Write tag, preserve value |
+| 6 | `REG_DEREF` | Load mem[value+offset] | Store to mem[value+offset] |
 | 7 | `ALU_LEFT` | Read ALU lane N left input | Set ALU lane N left input |
 | 8 | `ALU_RIGHT` | Read ALU lane N right input | Set ALU lane N right input |
 | 9 | `ALU_OP` | -- | Set ALU lane N operation |
@@ -110,9 +116,11 @@ destination require an extended operand.
 
 Each ALU lane holds a left operand (A), right operand (B), and an
 operator. You configure a lane by moving values into its inputs and
-operator, then read the result back. Most operations are
-combinational — available immediately with no extra clock cycle.
-The 16 operations are:
+operator, then read the result back. Arithmetic operates on the
+32-bit value portion only; the 4-bit tag from the left (A) operand
+is preserved in the result. Most operations are combinational —
+available immediately with no extra clock cycle. The 16 operations
+are:
 
 `NOP`, `ADD`, `SUB`, `MUL`, `DIV`, `MOD`, `EQL`, `SL` (shift left),
 `SR` (shift right), `SRA` (arithmetic shift right), `NOT` (unary,
@@ -159,23 +167,24 @@ value → reg[0]  [if_set]    ; only executes if cond is set, no stall
 
 ### Tagged registers
 
-Registers natively support tagged values, where a small type tag
-lives in the low bits of every 32-bit word (2-bit tags by default,
-configurable via `TAG_WIDTH`). Four dedicated unit types handle
-the access modes:
+Every register is 36 bits: a 32-bit value in bits [31:0] and a
+4-bit tag in bits [35:32]. Four dedicated unit types control how
+the tag and value are accessed:
 
 | Unit | Read | Write |
 |------|------|-------|
-| `REG` (3) | Full 32-bit word | Full 32-bit word |
-| `REG_VALUE` (4) | Word with tag bits zeroed | Preserve tag, set payload |
-| `REG_TAG` (5) | Tag bits only (zero-extended) | Preserve payload, set tag |
-| `REG_DEREF` (6) | Strip tag, load mem[addr + offset] | Strip tag, store to mem[addr + offset] |
+| `REG` (3) | Full 36-bit tagged word | Full 36-bit tagged word |
+| `REG_VALUE` (4) | 32-bit value only (tag zeroed) | Preserve tag, replace value |
+| `REG_TAG` (5) | Tag only (zero-extended to 36 bits) | Preserve value, replace tag |
+| `REG_DEREF` (6) | Load mem[value + offset] | Store to mem[value + offset] |
 
-`REG_DEREF` uses imm[7:5] as a word offset (0-7) from the
-untagged address. This enables single-move cons cell access:
+`REG_DEREF` uses the full 32-bit value as a memory address — no
+tag stripping needed, since the tag is in the sidecar bits, not
+in the value. imm[7:5] provides a word offset (0-7) for struct
+field access. This enables single-move cons cell access:
 
 ```
-; r0 holds a tagged cons pointer (tag=1, addr=20)
+; r0 holds value=20 with tag=1 (cons)
 reg[r0, DEREF+0] → reg[1]   ; car — load mem[20]
 reg[r0, DEREF+1] → reg[2]   ; cdr — load mem[21]
 ```
@@ -183,7 +192,7 @@ reg[r0, DEREF+1] → reg[2]   ; cdr — load mem[21]
 Type dispatch becomes two instructions:
 
 ```
-reg[r0, TAG] → cond          ; extract tag, set condition
+reg[r0, TAG] → cond          ; extract 4-bit tag, set condition
 HANDLER → pc_cond            ; branch if tag is nonzero
 ```
 
@@ -338,7 +347,7 @@ warm (fetch latency hidden).
 | imm → cond | 2 | Fused |
 | pc_cond (not taken) | 2 | 2-word, fused |
 | reg[TAG] → reg | 2 | Tag extract, fused |
-| reg[DEREF] → reg | 4 | Bus read through tagged pointer |
+| reg[DEREF] → reg | 4 | Bus read via register value + offset |
 | mem_byte → reg | 4 | Byte read + zero-extend |
 | push (via operand) | 5 | 2-word + stack handshake |
 | pop → reg | 5 | Stack handshake + arming cycle |
@@ -357,21 +366,22 @@ excluding block RAM):
 
 | Module | Cells | Notes |
 |--------|------:|-------|
-| execute | 11,900 | Main FSM, muxing, bus control |
-| alu_unit ×8 | 13,500 | 8 combinational ALU lanes |
-| sequencer | 2,900 | Instruction queue + fetch FSM |
+| execute | 12,600 | Main FSM, muxing, 36-bit data path |
+| alu_unit ×8 | 13,500 | 8 combinational ALU lanes (32-bit math + tag pass-through) |
+| sequencer | 3,000 | Instruction queue + fetch FSM |
 | muldiv_unit | 1,900 | Shared multi-cycle MUL/DIV/MOD |
-| stack_unit | 1,800 | 8×32-word stack controller |
-| register_unit ×32 | 1,100 | 32 registers (flip-flops) |
-| barrier_unit | 330 | 32-entry GC write barrier FIFO |
-| **Total** | **~33.5k** | |
+| stack_unit | 1,800 | 8×32-word stack controller (36-bit words) |
+| register_unit ×32 | 1,200 | 32 registers (36-bit flip-flops) |
+| barrier_unit | 350 | 32-entry GC write barrier FIFO (36-bit) |
+| **Total** | **~34.5k** | |
 
 These counts are for the `tta` core only (excluding the FPGA
 wrapper and boot ROM). The design fits on a Xilinx 7-series
 part like the CMod A35T (33,280 LUTs), with stack and register
-memories mapping to block RAM. All dimensions (register count,
-ALU lanes, stack count/depth, barrier depth) are configurable
-via Verilog parameters.
+memories mapping to block RAM. The 36-bit data width aligns
+with FPGA block RAM native width (36 bits on Xilinx 7-series).
+All dimensions (register count, ALU lanes, stack count/depth,
+barrier depth) are configurable via Verilog parameters.
 
 ### Project structure
 
