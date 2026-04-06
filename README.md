@@ -234,26 +234,25 @@ just Verilator simulation.
 ### Cycle counts
 
 Measured from the Verilator simulation with the instruction queue
-warm (fetch latency hidden). Counts include the 1-cycle
-accept→exec_active handshake overhead.
+warm (fetch latency hidden).
 
 | Instruction pattern | Cycles | Notes |
 |---------------------|--------|-------|
-| imm → reg | 3 | Fused src+dst |
-| reg → reg | 3 | Fused src+dst |
-| imm → ALU input/op | 3 | Fused src+dst |
-| ALU result → reg | 3 | Combinational ALU, fused |
-| reg → mem (write) | 4 | Fire-and-forget bus write |
-| mem → reg (read) | 5 | Bus read wait state |
-| abs_operand → reg | 3 | 2-word instruction, fused |
-| imm → cond | 3 | Fused |
-| pc_cond (not taken) | 3 | 2-word, fused |
-| reg[TAG] → reg | 5 | Tag extract, fused |
-| reg[DEREF] → reg | 3 | Bus read through tagged pointer |
-| push (via operand) | 6 | 2-word + stack handshake |
-| pop → reg | 6 | Stack handshake + arming cycle |
+| imm → reg | 2 | Fused src+dst |
+| reg → reg | 2 | Fused src+dst |
+| imm → ALU input/op | 2 | Fused src+dst |
+| ALU result → reg | 2 | Combinational ALU, fused |
+| reg → mem (write) | 3 | Fire-and-forget bus write |
+| mem → reg (read) | 4 | Bus read wait state |
+| abs_operand → reg | 2 | 2-word instruction, fused |
+| imm → cond | 2 | Fused |
+| pc_cond (not taken) | 2 | 2-word, fused |
+| reg[TAG] → reg | 4 | Tag extract |
+| reg[DEREF] → reg | 2 | Bus read through tagged pointer |
+| push (via operand) | 5 | 2-word + stack handshake |
+| pop → reg | 5 | Stack handshake + arming cycle |
 
-The common case — register/immediate/ALU moves — is 3 cycles.
+The common case — register/immediate/ALU moves — is 2 cycles.
 Memory and stack operations pay extra for bus or stack handshakes.
 With the 2-entry instruction queue, the fetch cost is fully hidden
 for sequential code; branches stall the fetch until resolved.

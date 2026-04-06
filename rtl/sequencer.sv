@@ -87,6 +87,17 @@ module sequencer (
   // The head of the queue is the entry execute will consume.
   assign instr_valid_o = q_valid[rd_ptr];
 
+  // Decoder-facing outputs: combinational mux so that on the accept
+  // cycle, execute sees the new instruction's fields immediately
+  // (no 1-cycle delay from non-blocking promotion). When accept is
+  // not active, the registered values hold the previous instruction
+  // stable for multi-cycle execute.
+  logic [31:0] reg_op, reg_src_operand, reg_dst_operand, reg_pc;
+  assign op_o          = instr_accept_i ? q_op[rd_ptr]          : reg_op;
+  assign src_operand_o = instr_accept_i ? q_src_operand[rd_ptr] : reg_src_operand;
+  assign dst_operand_o = instr_accept_i ? q_dst_operand[rd_ptr] : reg_dst_operand;
+  assign pc_o          = instr_accept_i ? q_pc[rd_ptr]          : reg_pc;
+
   // Staging area: the fetch FSM builds the instruction here before
   // enqueueing it as a complete entry.
   logic [31:0] staging_op;
@@ -130,10 +141,10 @@ module sequencer (
 
   always @(posedge clk_i) begin
     if (rst_i) begin
-      pc_o <= 32'b0;
-      op_o <= 32'b0;
-      src_operand_o <= 32'b0;
-      dst_operand_o <= 32'b0;
+      reg_pc <= 32'b0;
+      reg_op <= 32'b0;
+      reg_src_operand <= 32'b0;
+      reg_dst_operand <= 32'b0;
       fetch_pc <= 32'b0;
       staging_op <= 32'b0;
       staging_src_operand <= 32'b0;
@@ -159,16 +170,19 @@ module sequencer (
       fetch_state <= SEQ_FETCH_START;
     end else begin
 
-      // === Handoff: dequeue head entry to decoder-facing outputs ===
+      // === Handoff: dequeue head entry ===
+      // The decoder-facing outputs (op_o, etc.) are combinational muxes
+      // that show the queue head on the accept cycle. Here we latch the
+      // values into reg_* so they remain stable for multi-cycle execute.
       if (instr_accept_i && q_valid[rd_ptr]) begin
-        op_o <= q_op[rd_ptr];
+        reg_op <= q_op[rd_ptr];
+        reg_src_operand <= q_src_operand[rd_ptr];
+        reg_dst_operand <= q_dst_operand[rd_ptr];
+        reg_pc <= q_pc[rd_ptr];
         // If the accepted instruction was the branch that stalled us,
         // clear the stall — execute will either flush (taken) or
         // sequential fetch is now safe (not taken).
         fetch_stalled_on_branch <= 1'b0;
-        src_operand_o <= q_src_operand[rd_ptr];
-        dst_operand_o <= q_dst_operand[rd_ptr];
-        pc_o <= q_pc[rd_ptr];
         q_valid[rd_ptr] <= 1'b0;
         rd_ptr <= ~rd_ptr;
       end

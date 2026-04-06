@@ -223,10 +223,11 @@ module execute (
 
       done_o <= 1'b0;
     end else begin
-      // Run the FSM when exec_active is set. Accept fires on cycle N and
-      // latches exec_active via <=, so the FSM first runs on cycle N+1 —
-      // after the sequencer has promoted the prefetch buffer to op_o.
-      automatic logic run_execute = exec_active && !done_o;
+      // Run the FSM on the accept cycle (decoder outputs are now
+      // combinational from the queue head) AND while exec_active for
+      // multi-cycle operations. This eliminates the 1-cycle accept
+      // overhead — fused moves complete on the accept cycle itself.
+      automatic logic run_execute = (exec_active || instr_accept_o) && !done_o;
 
       // Auto-clear done_o and pc_write_en_o after one cycle.
       if (done_o) begin
@@ -270,8 +271,7 @@ module execute (
                 UNIT_MEMORY_OPERAND: data_bus.addr <= src_operand_i;
                 UNIT_MEMORY_IMMEDIATE: data_bus.addr <= {20'b0, src_immediate_i};
                 UNIT_REGISTER_POINTER: begin
-                  reg_unit_select[src_immediate_i[4:0]] <= 1'b1;
-                  data_bus.addr <= reg_out_data[src_immediate_i[4:0]];
+                  data_bus.addr <= reg_raw_data[src_immediate_i[4:0]];
                 end
                 default: data_bus.addr <= 32'b0;
               endcase
@@ -541,8 +541,7 @@ module execute (
                 UNIT_MEMORY_OPERAND: data_bus.addr <= dst_operand_i;
                 UNIT_MEMORY_IMMEDIATE: data_bus.addr <= {20'b0, dst_immediate_i};
                 UNIT_REGISTER_POINTER: begin
-                  reg_unit_select[dst_immediate_i[4:0]] <= 1'b1;
-                  data_bus.addr <= reg_out_data[dst_immediate_i[4:0]];
+                  data_bus.addr <= reg_raw_data[dst_immediate_i[4:0]];
                 end
                 default: data_bus.addr <= 32'b0;
               endcase
