@@ -1717,4 +1717,271 @@ mod tests {
 
         Ok(())
     }
+
+    // --- Jump and conditional branch tests ---
+
+    #[test]
+    fn test_unconditional_jump() -> Result<(), Box<dyn std::error::Error>> {
+        let runtime = create_runtime()?;
+        let mut tta = runtime
+            .create_model_simple::<TtaTestbench>()
+            .map_err(|e| format!("Failed to create model: {:?}", e))?;
+        let mut helper = TtaTestHelper::new();
+
+        tta.rst_i = 1;
+        tta.clk_i = 0;
+        tta.instr_ready_i = 1;
+        tta.data_ready_i = 1;
+        tta.instr_data_read_i = 0;
+        tta.data_data_read_i = 0;
+
+        // Program: store 111, jump over the next instruction, store 333.
+        // Address layout:
+        //   0: store 111 to mem[100]
+        //   1: jump to address 4 (skip the next instruction)    [2 words: opcode + operand]
+        //   3: store 222 to mem[100]  (should be SKIPPED)
+        //   4: store 333 to mem[101]
+        let program = vec![
+            // addr 0: store 111 to mem[100]
+            instr()
+                .src(Unit::UNIT_ABS_IMMEDIATE)
+                .si(111)
+                .dst(Unit::UNIT_MEMORY_IMMEDIATE)
+                .di(100),
+            // addr 1-2: jump to address 4
+            instr()
+                .src(Unit::UNIT_ABS_OPERAND)
+                .soperand(4)
+                .dst(Unit::UNIT_PC),
+            // addr 3: store 222 to mem[100] (should be skipped)
+            instr()
+                .src(Unit::UNIT_ABS_IMMEDIATE)
+                .si(222)
+                .dst(Unit::UNIT_MEMORY_IMMEDIATE)
+                .di(100),
+            // addr 4: store 333 to mem[101]
+            instr()
+                .src(Unit::UNIT_ABS_IMMEDIATE)
+                .si(333)
+                .dst(Unit::UNIT_MEMORY_IMMEDIATE)
+                .di(101),
+        ];
+
+        let mut machine_code = Vec::new();
+        for i in &program {
+            machine_code.extend(i.assemble());
+        }
+        helper.load_instructions(&machine_code, 0);
+        helper.run_until_reset_released(&mut tta)?;
+        helper.run_for_cycles(&mut tta, 200);
+
+        let mem100 = helper.get_data_memory(100);
+        let mem101 = helper.get_data_memory(101);
+
+        assert_eq!(mem100, 111, "mem[100] should be 111 (not overwritten by skipped instruction)");
+        assert_eq!(mem101, 333, "mem[101] should be 333 (landed after jump)");
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_conditional_branch_taken() -> Result<(), Box<dyn std::error::Error>> {
+        let runtime = create_runtime()?;
+        let mut tta = runtime
+            .create_model_simple::<TtaTestbench>()
+            .map_err(|e| format!("Failed to create model: {:?}", e))?;
+        let mut helper = TtaTestHelper::new();
+
+        tta.rst_i = 1;
+        tta.clk_i = 0;
+        tta.instr_ready_i = 1;
+        tta.data_ready_i = 1;
+        tta.instr_data_read_i = 0;
+        tta.data_data_read_i = 0;
+
+        // Set condition to nonzero (1), then conditional jump should be taken.
+        //   0: set cond = 1 (via abs_immediate 1 → UNIT_COND)
+        //   1: conditional jump to addr 4
+        //   3: store 222 to mem[100]  (should be SKIPPED)
+        //   4: store 333 to mem[100]
+        let program = vec![
+            // addr 0: set condition register = 1
+            instr()
+                .src(Unit::UNIT_ABS_IMMEDIATE)
+                .si(1)
+                .dst(Unit::UNIT_COND),
+            // addr 1-2: conditional jump to addr 4
+            instr()
+                .src(Unit::UNIT_ABS_OPERAND)
+                .soperand(4)
+                .dst(Unit::UNIT_PC_COND),
+            // addr 3: store 222 (should be skipped)
+            instr()
+                .src(Unit::UNIT_ABS_IMMEDIATE)
+                .si(222)
+                .dst(Unit::UNIT_MEMORY_IMMEDIATE)
+                .di(100),
+            // addr 4: store 333
+            instr()
+                .src(Unit::UNIT_ABS_IMMEDIATE)
+                .si(333)
+                .dst(Unit::UNIT_MEMORY_IMMEDIATE)
+                .di(100),
+        ];
+
+        let mut machine_code = Vec::new();
+        for i in &program {
+            machine_code.extend(i.assemble());
+        }
+        helper.load_instructions(&machine_code, 0);
+        helper.run_until_reset_released(&mut tta)?;
+        helper.run_for_cycles(&mut tta, 200);
+
+        let result = helper.get_data_memory(100);
+        assert_eq!(result, 333, "Conditional branch should be taken (cond=1), landing at addr 4");
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_conditional_branch_not_taken() -> Result<(), Box<dyn std::error::Error>> {
+        let runtime = create_runtime()?;
+        let mut tta = runtime
+            .create_model_simple::<TtaTestbench>()
+            .map_err(|e| format!("Failed to create model: {:?}", e))?;
+        let mut helper = TtaTestHelper::new();
+
+        tta.rst_i = 1;
+        tta.clk_i = 0;
+        tta.instr_ready_i = 1;
+        tta.data_ready_i = 1;
+        tta.instr_data_read_i = 0;
+        tta.data_data_read_i = 0;
+
+        // Condition is zero, so conditional jump should NOT be taken.
+        //   0: set cond = 0
+        //   1: conditional jump to addr 4 (should fall through)
+        //   3: store 222 to mem[100]  (should execute)
+        //   4: store 333 to mem[101]
+        let program = vec![
+            // addr 0: set condition register = 0
+            instr()
+                .src(Unit::UNIT_ABS_IMMEDIATE)
+                .si(0)
+                .dst(Unit::UNIT_COND),
+            // addr 1-2: conditional jump to addr 4 (not taken)
+            instr()
+                .src(Unit::UNIT_ABS_OPERAND)
+                .soperand(4)
+                .dst(Unit::UNIT_PC_COND),
+            // addr 3: store 222 (should execute — branch not taken)
+            instr()
+                .src(Unit::UNIT_ABS_IMMEDIATE)
+                .si(222)
+                .dst(Unit::UNIT_MEMORY_IMMEDIATE)
+                .di(100),
+            // addr 4: store 333
+            instr()
+                .src(Unit::UNIT_ABS_IMMEDIATE)
+                .si(333)
+                .dst(Unit::UNIT_MEMORY_IMMEDIATE)
+                .di(101),
+        ];
+
+        let mut machine_code = Vec::new();
+        for i in &program {
+            machine_code.extend(i.assemble());
+        }
+        helper.load_instructions(&machine_code, 0);
+        helper.run_until_reset_released(&mut tta)?;
+        helper.run_for_cycles(&mut tta, 200);
+
+        let mem100 = helper.get_data_memory(100);
+        let mem101 = helper.get_data_memory(101);
+
+        assert_eq!(mem100, 222, "Branch not taken — addr 3 should execute, storing 222");
+        assert_eq!(mem101, 333, "Execution should continue to addr 4");
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_compare_and_branch() -> Result<(), Box<dyn std::error::Error>> {
+        let runtime = create_runtime()?;
+        let mut tta = runtime
+            .create_model_simple::<TtaTestbench>()
+            .map_err(|e| format!("Failed to create model: {:?}", e))?;
+        let mut helper = TtaTestHelper::new();
+
+        tta.rst_i = 1;
+        tta.clk_i = 0;
+        tta.instr_ready_i = 1;
+        tta.data_ready_i = 1;
+        tta.instr_data_read_i = 0;
+        tta.data_data_read_i = 0;
+
+        // Compare 42 > 10, branch if true.
+        //   0: 42 → alu[0].left
+        //   1: 10 → alu[0].right
+        //   2: GT → alu[0].operator
+        //   3: alu[0].result → UNIT_COND
+        //   4-5: conditional jump to addr 7
+        //   6: store 999 to mem[100]   (should be SKIPPED since 42 > 10)
+        //   7: store 123 to mem[100]
+        let program = vec![
+            // addr 0
+            instr()
+                .src(Unit::UNIT_ABS_IMMEDIATE)
+                .si(42)
+                .dst(Unit::UNIT_ALU_LEFT)
+                .di(0),
+            // addr 1
+            instr()
+                .src(Unit::UNIT_ABS_IMMEDIATE)
+                .si(10)
+                .dst(Unit::UNIT_ALU_RIGHT)
+                .di(0),
+            // addr 2
+            instr()
+                .src(Unit::UNIT_ABS_IMMEDIATE)
+                .si(14) // ALU_GT = 0x00e = 14
+                .dst(Unit::UNIT_ALU_OPERATOR)
+                .di(0),
+            // addr 3: read ALU result (1 = true) → condition register
+            instr()
+                .src(Unit::UNIT_ALU_RESULT)
+                .si(0)
+                .dst(Unit::UNIT_COND),
+            // addr 4-5: conditional jump to addr 7
+            instr()
+                .src(Unit::UNIT_ABS_OPERAND)
+                .soperand(7)
+                .dst(Unit::UNIT_PC_COND),
+            // addr 6: store 999 (should be skipped)
+            instr()
+                .src(Unit::UNIT_ABS_IMMEDIATE)
+                .si(999)
+                .dst(Unit::UNIT_MEMORY_IMMEDIATE)
+                .di(100),
+            // addr 7: store 123
+            instr()
+                .src(Unit::UNIT_ABS_IMMEDIATE)
+                .si(123)
+                .dst(Unit::UNIT_MEMORY_IMMEDIATE)
+                .di(100),
+        ];
+
+        let mut machine_code = Vec::new();
+        for i in &program {
+            machine_code.extend(i.assemble());
+        }
+        helper.load_instructions(&machine_code, 0);
+        helper.run_until_reset_released(&mut tta)?;
+        helper.run_for_cycles(&mut tta, 200);
+
+        let result = helper.get_data_memory(100);
+        assert_eq!(result, 123, "42 > 10 is true, branch should be taken, storing 123 not 999");
+
+        Ok(())
+    }
 }

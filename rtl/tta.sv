@@ -28,6 +28,11 @@ module tta (
   logic need_dst_operand;
   logic decoder_enable;
   logic sequencer_done;
+
+  // PC write interface from execute (jumps / conditional branches).
+  logic [31:0] pc_write;
+  logic        pc_write_en;
+
   // Hold off the next fetch until the current execute phase has completed.
   wire  pause_sequencer = sequencer_done && ~done_exec;
   sequencer sequencer (
@@ -42,6 +47,8 @@ module tta (
       .dst_operand_o(dst_operand),
       .decoder_enable_o(decoder_enable),
       .need_dst_operand_i(need_dst_operand),
+      .pc_write_i(pc_write),
+      .pc_write_en_i(pc_write_en),
       .done_o(sequencer_done)
   );
   Unit src_unit;
@@ -74,6 +81,8 @@ module tta (
       .dst_unit_i(dst_unit),
       .dst_immediate_i(di),
       .dst_operand_i(dst_operand),
+      .pc_write_o(pc_write),
+      .pc_write_en_o(pc_write_en),
       .done_o(done_exec)
   );
 

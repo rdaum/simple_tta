@@ -62,6 +62,8 @@ destination require an extended operand.
 | `ABS_IMMEDIATE` | Literal 12-bit value | -- |
 | `ABS_OPERAND` | Literal 32-bit value (next word) | -- |
 | `PC` | Read program counter | Jump (set program counter) |
+| `COND` | Read condition register (0 or 1) | Set condition (nonzero = true) |
+| `PC_COND` | -- | Jump only if condition register is set |
 | `STACK_PUSH_POP` | Pop from stack N (imm[2:0]) | Push to stack N |
 | `STACK_INDEX` | Peek at offset in stack N | Poke at offset in stack N |
 
@@ -79,6 +81,30 @@ operator, then read the result back. The 16 operations are:
 B ignored), `AND`, `OR`, `XOR`, `GT`, `LT`
 
 Comparisons (`EQL`, `GT`, `LT`) produce 0 or 1.
+
+### Branching
+
+The processor has a 1-bit condition register and two branch
+mechanisms:
+
+  * **Unconditional jump:** move a target address to `PC`.
+  * **Conditional branch:** set the condition register via
+    `COND`, then move a target address to `PC_COND`. The jump
+    is only taken if the condition register is nonzero.
+
+A compare-and-branch sequence looks like:
+
+```
+42  → alu[0].left       ; set up comparison
+10  → alu[0].right
+GT  → alu[0].operator   ; 42 > 10 = 1
+alu[0].result → cond    ; latch result into condition register
+LABEL → pc_cond         ; jump if condition is set
+```
+
+The condition register is designed with pipelining in mind: the
+condition is resolved in a prior instruction, so a future pipeline
+can forward the single-bit result with minimal stall penalty.
 
 ### Sub-word memory access
 

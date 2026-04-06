@@ -40,6 +40,8 @@ pub enum Unit {
     UNIT_ABS_IMMEDIATE = 11,
     UNIT_ABS_OPERAND = 12,
     UNIT_REGISTER_POINTER = 13,
+    UNIT_COND = 14,
+    UNIT_PC_COND = 15,
 }
 
 impl Unit {

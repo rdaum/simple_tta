@@ -25,6 +25,8 @@ module execute (
     input logic [11:0] dst_immediate_i, // Destination immediate field
     input logic [31:0] dst_operand_i,   // Destination 32-bit operand (from sequencer)
     bus_if.master data_bus,             // Data memory bus (loads and stores)
+    output logic [31:0] pc_write_o,     // PC value for jumps (to sequencer)
+    output logic        pc_write_en_o,  // High to override PC (jump taken)
     output logic done_o                 // Pulses high when the move is complete
 );
   // Architectural register file: 32 independent 32-bit cells.
@@ -101,6 +103,12 @@ module execute (
   ExecState exec_state;
   logic [31:0] src_value;
 
+  // 1-bit condition register for conditional branches.
+  // Written via UNIT_COND (nonzero → 1, zero → 0).
+  // Read via UNIT_COND (returns 0 or 1).
+  // Tested by UNIT_PC_COND (jump only if set).
+  logic cond_reg;
+
   // Sub-word access helpers: extract width and byte offset from immediate fields.
   // Only applicable for MEMORY_OPERAND and REGISTER_POINTER where the
   // immediate field is not used as the primary address. MEMORY_IMMEDIATE
@@ -160,12 +168,15 @@ module execute (
 
       // Initialize execution state
       exec_state = EXEC_START_SRC;
+      cond_reg = 1'b0;
+      pc_write_en_o = 1'b0;
 
       done_o = 1'b0;
     end else if (sel_i) begin
       case (exec_state)
         EXEC_START_SRC: begin
           done_o = 1'b0;
+          pc_write_en_o = 1'b0;
           reg_unit_select = '{default: 1'b0};
           reg_unit_write = '{default: 1'b0};
           alu_select = '{default: 1'b0};
@@ -226,6 +237,11 @@ module execute (
             end
             UNIT_PC: begin
               src_value  = pc_i;
+              exec_state = EXEC_START_DST;
+            end
+            UNIT_COND: begin
+              // Read the condition register (0 or 1).
+              src_value  = {31'b0, cond_reg};
               exec_state = EXEC_START_DST;
             end
             UNIT_STACK_PUSH_POP: begin
@@ -353,6 +369,28 @@ module execute (
               stack_data_in = src_value;
               stack_index_write = 1'b1;
               exec_state = EXEC_DST_STACK_WAIT;
+            end
+            UNIT_PC: begin
+              // Unconditional jump: set PC to src_value.
+              pc_write_o = src_value;
+              pc_write_en_o = 1'b1;
+              done_o = 1'b1;
+              exec_state = EXEC_START_SRC;
+            end
+            UNIT_COND: begin
+              // Write condition register: nonzero → 1, zero → 0.
+              cond_reg = (src_value != 32'b0);
+              done_o = 1'b1;
+              exec_state = EXEC_START_SRC;
+            end
+            UNIT_PC_COND: begin
+              // Conditional jump: set PC to src_value only if cond_reg is set.
+              if (cond_reg) begin
+                pc_write_o = src_value;
+                pc_write_en_o = 1'b1;
+              end
+              done_o = 1'b1;
+              exec_state = EXEC_START_SRC;
             end
             default: begin
               done_o = 1'b1;

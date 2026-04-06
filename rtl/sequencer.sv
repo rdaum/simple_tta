@@ -24,6 +24,11 @@ module sequencer (
     input  logic sel_i,                 // Enable — held low to pause the sequencer
     output wire  decoder_enable_o,      // One-cycle pulse that gates the decoder
 
+    // PC override from execute (for jumps / conditional branches).
+    // Sampled when done_o is about to go high on the next fetch cycle.
+    input  logic [31:0] pc_write_i,     // New PC value
+    input  logic        pc_write_en_i,  // High to override PC with pc_write_i
+
     output logic done_o                 // High when the full instruction is fetched
 );
   // Fetch FSM states. The sequencer walks through START → READ_OPCODE →
@@ -52,6 +57,10 @@ module sequencer (
     end else if (sel_i) begin
       case (sequencer_state)
         SEQ_START: begin
+          // If execute requested a PC override (jump/branch), apply it now
+          // before fetching the next opcode.
+          if (pc_write_en_i)
+            pc_o = pc_write_i;
           // Begin reading the next opcode at the current program counter.
           instr_bus.valid = 1'b1;
           instr_bus.instr = 1'b1;

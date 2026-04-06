@@ -53,7 +53,9 @@ typedef enum bit[3:0] {
     UNIT_PC               = 10,  // Program counter (source: read; dest: jump)
     UNIT_ABS_IMMEDIATE    = 11,  // Literal 12-bit immediate value (zero-extended)
     UNIT_ABS_OPERAND      = 12,  // Literal 32-bit value (next program word)
-    UNIT_REGISTER_POINTER = 13   // Memory at address held in register N (imm[4:0])
+    UNIT_REGISTER_POINTER = 13,  // Memory at address held in register N (imm[4:0])
+    UNIT_COND             = 14,  // Source: read condition (0 or 1); Dest: set condition (nonzero = true)
+    UNIT_PC_COND          = 15   // Destination only: jump to src_value if condition register is set
 } Unit;
 
 // Access width selector, carried in immediate bits [11:10] of MEMORY_OPERAND
