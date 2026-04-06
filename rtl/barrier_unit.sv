@@ -9,7 +9,9 @@
 // 32 entries deep. When full, further pushes are silently dropped
 // and barrier_overflow_o pulses (the GC should drain before this
 // happens). When empty, pops return 0 and barrier_empty_o is high.
-module barrier_unit (
+module barrier_unit #(
+    parameter BARRIER_DEPTH = 32
+) (
     input wire clk_i,
     input wire rst_i,
 
@@ -30,8 +32,8 @@ module barrier_unit (
     /* verilator lint_on UNUSEDSIGNAL */
 );
 
-  localparam DEPTH = 32;
-  localparam PTR_BITS = 5;
+  localparam DEPTH = BARRIER_DEPTH;
+  localparam PTR_BITS = $clog2(BARRIER_DEPTH);
 
   reg [31:0] fifo [0:DEPTH-1];
   reg [PTR_BITS:0] count;  // 6 bits to hold 0..32

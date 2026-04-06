@@ -11,15 +11,18 @@
 // on data_o in the same cycle the operation state is active. The
 // sequential path (always_ff) updates stack memory and pointers on the
 // following clock edge.
-module stack_unit (
+module stack_unit #(
+    parameter NUM_STACKS  = 8,
+    parameter STACK_DEPTH = 64
+) (
     input wire clk_i,
     input wire rst_i,
 
     // Stack control interface
-    input wire [2:0] stack_select_i,     // 0-7 stack selection
+    input wire [2:0] stack_select_i,     // 0..NUM_STACKS-1
     input wire stack_push_i,
     input wire stack_pop_i,
-    input wire [5:0] stack_offset_i,     // For indexed access (0-63)
+    input wire [5:0] stack_offset_i,     // For indexed access
     input wire stack_index_read_i,
     input wire stack_index_write_i,
 
@@ -33,20 +36,21 @@ module stack_unit (
     output logic stack_underflow_o
 );
 
-  localparam STACK_DEPTH = 64;
-  localparam STACK_PTR_BITS = 6;
-  localparam [STACK_PTR_BITS-1:0] STACK_EMPTY = 6'd0;
+  localparam STACK_IDX_BITS = $clog2(STACK_DEPTH);
+  localparam [STACK_IDX_BITS-1:0] STACK_EMPTY = 0;
+  /* verilator lint_off WIDTHTRUNC */
+  localparam [STACK_IDX_BITS-1:0] STACK_MAX   = STACK_DEPTH - 1;
+  /* verilator lint_on WIDTHTRUNC */
 
-  // 8 independent stacks, each 64 words deep.
-  reg [31:0] stack_mem[0:7][0:STACK_DEPTH-1];
+  reg [31:0] stack_mem[0:NUM_STACKS-1][0:STACK_DEPTH-1];
 
   // Stack pointers: each points at the next free slot (empty-ascending).
-  reg [STACK_PTR_BITS-1:0] stack_pointers[0:7];
+  reg [STACK_IDX_BITS-1:0] stack_pointers[0:NUM_STACKS-1];
 
   // Per-stack error status (accumulated for external debug probes).
   /* verilator lint_off UNUSEDSIGNAL */
-  reg [7:0] overflow_status;
-  reg [7:0] underflow_status;
+  reg [NUM_STACKS-1:0] overflow_status;
+  reg [NUM_STACKS-1:0] underflow_status;
   /* verilator lint_on UNUSEDSIGNAL */
 
   // FSM state.
@@ -65,17 +69,17 @@ module stack_unit (
   // immediately following a write to the same address sees the
   // new data (read-after-write hazard).
   reg [2:0] last_write_stack_id;
-  reg [STACK_PTR_BITS-1:0] last_write_addr;
+  reg [STACK_IDX_BITS-1:0] last_write_addr;
   reg [31:0] last_write_data;
   reg last_write_valid;
 
   // --- Combinational read path ---
   // Provides pop/peek results on data_o without an extra cycle.
   // Also computes the absolute index for indexed operations.
-  logic [STACK_PTR_BITS-1:0] abs_index;
+  logic [STACK_IDX_BITS-1:0] abs_index;
 
   always_comb begin
-    abs_index = 6'b0;
+    abs_index = {STACK_IDX_BITS{1'b0}};
     data_o = 32'b0;
 
     if (!rst_i) begin
@@ -102,13 +106,13 @@ module stack_unit (
 
   // --- Combinational write index for STACK_INDEXING ---
   // Computed here so the sequential block can use it with <=.
-  logic [STACK_PTR_BITS-1:0] comb_write_index;
+  logic [STACK_IDX_BITS-1:0] comb_write_index;
   always_comb begin
     if (stack_pointers[active_stack] != STACK_EMPTY &&
         stack_offset_i < stack_pointers[active_stack])
       comb_write_index = stack_pointers[active_stack] - 1 - stack_offset_i;
     else
-      comb_write_index = 6'b0;
+      comb_write_index = {STACK_IDX_BITS{1'b0}};
   end
 
   // --- Sequential logic ---
@@ -116,10 +120,10 @@ module stack_unit (
 
   always_ff @(posedge clk_i) begin
     if (rst_i) begin
-      for (i = 0; i < 8; i = i + 1)
+      for (i = 0; i < NUM_STACKS; i = i + 1)
         stack_pointers[i] <= STACK_EMPTY;
-      overflow_status <= 8'b0;
-      underflow_status <= 8'b0;
+      overflow_status <= {NUM_STACKS{1'b0}};
+      underflow_status <= {NUM_STACKS{1'b0}};
       state <= STACK_IDLE;
       stack_ready_o <= 1'b1;
       stack_overflow_o <= 1'b0;
@@ -150,7 +154,7 @@ module stack_unit (
         end
 
         STACK_PUSHING: begin
-          if (stack_pointers[active_stack] >= 6'd63) begin
+          if (stack_pointers[active_stack] >= STACK_MAX) begin
             overflow_status[active_stack] <= 1'b1;
             stack_overflow_o <= 1'b1;
           end else begin

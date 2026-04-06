@@ -10,7 +10,13 @@
 //   - instr_accept: execute is consuming the instruction this cycle
 // The sequencer prefetches the next instruction while execute runs,
 // hiding bus latency for sequential code. All addresses are word-addressed.
-module tta (
+module tta #(
+    parameter NUM_REGISTERS  = 32,
+    parameter NUM_ALUS       = 8,
+    parameter NUM_STACKS     = 8,
+    parameter STACK_DEPTH    = 64,
+    parameter BARRIER_DEPTH  = 32
+) (
     input wire rst_i,           // Synchronous reset (active high)
     input wire clk_i,           // System clock
     output wire instr_done_o,   // Pulses high for one cycle when a move completes
@@ -90,7 +96,13 @@ module tta (
       .di_o(di)
   );
 
-  execute execute (
+  execute #(
+      .NUM_REGISTERS(NUM_REGISTERS),
+      .NUM_ALUS(NUM_ALUS),
+      .NUM_STACKS(NUM_STACKS),
+      .STACK_DEPTH(STACK_DEPTH),
+      .BARRIER_DEPTH(BARRIER_DEPTH)
+  ) execute (
       .rst_i(rst_i),
       .clk_i(clk_i),
       .pc_i(pc),
