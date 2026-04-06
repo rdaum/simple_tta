@@ -10,13 +10,20 @@ name = "sideeffect_sim"
 name = "sideeffect-sim"
 path = "src/main.rs"
 
+[[bin]]
+name = "sideeffect-lisp"
+path = "src/lisp_runner.rs"
+
 [dependencies]
 sideeffect-asm = { path = "../sideeffect-asm" }
+sideeffect-lisp = { path = "../sideeffect-lisp" }
 marlin = { version = "0.7.2", features = ["verilog"] }
 tokio = { version = "1.0", features = ["full"] }
 eyre = "0.6"
 camino = "1.1"
 env_logger = "0.10"
+rustyline = "14"
 
 [dev-dependencies]
 proptest = "1.4"
+sideeffect-lisp = { path = "../sideeffect-lisp" }

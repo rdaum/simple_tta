@@ -16,19 +16,19 @@ My idea was to permit the deployment of Lua, Lisp, or WebAssembly on a soft core
 hardware support for the primitives those runtimes need (tagged pointers, type dispatch, cons cell access, garbage
 collection barriers).
 
-The accompanying Rust tooling includes an assembler and a dataflow graph
-compiler that handles ALU lane scheduling and label resolution,
-making it practical to generate TTA programs from higher-level
-representations.
+The accompanying Rust tooling includes an assembler, a dataflow
+graph compiler, and a Lisp compiler with REPL that compiles
+s-expressions to TTA instructions and executes them on the
+hardware via cycle-accurate Verilator simulation.
 
 ### What can it do?
 
 **Hardware resources:** 32 tagged registers, 8 independent
 integer ALU lanes, 8 hardware stacks (32 words each), a 32-entry
-GC write barrier FIFO, separate instruction and data buses, a
-2-entry instruction queue with prefetch, and a condition register
-for branching. All configurable via Verilog parameters. All
-memory is word-addressed.
+GC write barrier FIFO, a hardware bump allocator, separate
+instruction and data buses, a 2-entry instruction queue with
+prefetch, and a condition register for branching. All
+configurable via Verilog parameters. All memory is word-addressed.
 
 **Programming model:** there is really only one kind of
 instruction: *move a value from a source unit to a destination
@@ -323,6 +323,48 @@ g.place_label(skip);
 // ... then path ...
 ```
 
+### Lisp compiler
+
+The `sideeffect-lisp` crate is a compiler from a subset of
+Scheme/Lisp to TTA instructions. It demonstrates the hardware's
+tagged value support in a real language context.
+
+**Supported forms:** `define`, `lambda`, `if`, `let`, `begin`,
+`quote`, `cons`, `car`, `cdr`, `null?`, `eq?`, `not`, `+`, `-`,
+`*`, `=`, `>`, `<`.
+
+**Runtime model:** values are 36-bit tagged words. Cons cells
+are two adjacent words in data memory allocated via the hardware
+`ALLOC` unit. Closures are two-word records (code pointer +
+environment pointer) tagged as `Lambda`. Environment frames are
+heap-allocated linked lists — slot 0 is the parent pointer,
+slots 1-7 are local bindings, accessed via `DEREF` with word
+offsets.
+
+**Calling convention:** arguments are pushed to eval stack
+(hardware stack 0). The `CALL` unit pushes the return address to
+stack 1 and jumps. The callee allocates a frame, pops args, and
+sets the environment register. On return, the caller's
+environment is restored from stack 2.
+
+**REPL session example:**
+
+```
+λ> (+ 1 2)
+=> 3
+   (28 cycles, 9 words)
+λ> (define (fact n) (if (= n 0) 1 (* n (fact (- n 1)))))
+=> 0
+λ> (fact 10)
+=> 3628800
+   (1616 cycles, 48 words)
+λ> (let ((a 5)) (let ((f (lambda (x) (+ x a)))) (f 10)))
+=> 15
+```
+
+Every expression is compiled to native TTA instructions and
+executed cycle-accurately on the Verilator RTL simulation.
+
 ### Microarchitecture
 
 The core has three stages: **sequencer** (fetch), **decoder**
@@ -370,10 +412,11 @@ just Verilator simulation.
 
 ### What's next?
 
+* Tail call optimization in the Lisp compiler
+* Garbage collection (write barrier FIFO is there, collector is not)
 * Interrupts
 * 1-cycle fused pipeline (forwarding infrastructure is in place,
   activation blocked on one edge case)
-* Lua bytecode interpreter or JIT as a proof-of-concept runtime
 * Wider instruction bus / instruction cache for real FPGA memory
 * Jump table unit for computed gotos (type dispatch, eval)
 
@@ -440,21 +483,30 @@ barrier depth) are configurable via Verilog parameters.
 
 ### Project structure
 
-The Rust code is a Cargo workspace with two crates:
+The Rust code is a Cargo workspace with three crates:
 
 * **`crates/sideeffect-asm`** — assembler and dataflow compiler. Pure
   Rust, no simulator dependencies. Use this to generate TTA
   programs without a hardware simulator.
-* **`crates/sideeffect-sim`** — Verilator/Marlin simulator runtime, CLI,
-  and all tests. Depends on `sideeffect-asm` and re-exports its types.
+* **`crates/sideeffect-lisp`** — Lisp compiler targeting the TTA.
+  Parses s-expressions, compiles to TTA instructions via
+  `sideeffect-asm`. Supports `define`, `lambda`, `if`, `let`,
+  `cons`/`car`/`cdr`, arithmetic, lexical closures, and recursion.
+* **`crates/sideeffect-sim`** — Verilator/Marlin simulator runtime,
+  Lisp REPL, and all tests. Depends on the other two crates.
 
 HDL sources live in `rtl/`, with top-level simulation wrappers
 `tta_tb.sv` and `simtop.sv` at the repo root.
 
 ### Building, running
 
-* `cargo test` runs the full test suite (114 tests: unit,
-  integration, and property-based)
+* `cargo test` runs the full test suite (149 tests: unit,
+  integration, property-based, and Lisp end-to-end)
+* `cargo run --bin sideeffect-lisp` launches the Lisp REPL
+  (each expression is compiled to TTA code and executed on
+  the Verilator hardware sim)
+* `cargo run --bin sideeffect-lisp -- "(+ 1 2)"` evaluates a
+  single expression
 * `cargo run -p sideeffect-sim -- --cycles 200` runs the Marlin-backed
   `simtop` wrapper with boot ROM and external SRAM modeling
 * `cargo run -p sideeffect-sim -- --trace-file simtop.vcd` writes a VCD

@@ -1,3 +1,3 @@
 [workspace]
-members = ["crates/sideeffect-asm", "crates/sideeffect-sim"]
+members = ["crates/sideeffect-asm", "crates/sideeffect-lisp", "crates/sideeffect-sim"]
 resolver = "2"

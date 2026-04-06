@@ -1,0 +1,10 @@
+[package]
+name = "sideeffect-lisp"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+name = "sideeffect_lisp"
+
+[dependencies]
+sideeffect-asm = { path = "../sideeffect-asm" }
