@@ -1,5 +1,7 @@
 `include "common.vh"
 
+// Eight independent 64-word stacks used for push/pop plus indexed peek/poke.
+// Offsets are measured from the top of stack: 0 = top element.
 module stack_unit (
     input wire clk_i,
     input wire rst_i,
@@ -22,7 +24,7 @@ module stack_unit (
     output reg stack_underflow_o
 );
 
-  // Stack parameters - simplified design
+  // Stack parameters for the current implementation: 8 stacks, 64 words each.
   localparam STACK_DEPTH = 64;  // 256 bytes / 4 bytes per word = 64 words
   localparam STACK_PTR_BITS = 6;  // log2(64) = 6 bits for pointer
   localparam [STACK_PTR_BITS-1:0] STACK_EMPTY = 6'd0;  // Empty stack pointer = 0
@@ -31,7 +33,7 @@ module stack_unit (
   // 8 independent stacks, each 64 words deep
   reg [31:0] stack_mem[0:7][0:STACK_DEPTH-1];
 
-  // Stack pointers - empty ascending (SP points to next free location)
+  // Empty-ascending convention: SP points at the next free slot.
   reg [STACK_PTR_BITS-1:0] stack_pointers[0:7];
 
   // Error registers
@@ -75,7 +77,8 @@ module stack_unit (
   end
 
 
-  // Combinational data output logic to avoid race conditions
+  // Combinational read path so pop/peek results are available without waiting
+  // an extra clock after the state transition.
   always_comb begin
     // Default values
     abs_index = 6'b0;
@@ -99,8 +102,7 @@ module stack_unit (
         end
       end
     end else if (state == STACK_INDEXING) begin
-      // Handle indexed read operation
-      // For empty ascending: offset 0 = top of stack (SP-1), offset 1 = SP-2, etc.
+      // Indexed reads count backward from the top element.
       if (stack_offset_i >= stack_pointers[active_stack] || stack_pointers[active_stack] == STACK_EMPTY) begin
         data_o = 32'b0;  // Out of bounds or empty stack
       end else begin
@@ -155,7 +157,7 @@ module stack_unit (
         end
 
         STACK_PUSHING: begin
-          // Check for overflow (stack full when pointer would exceed bounds)
+          // Push stores at SP, then advances SP to the next free slot.
           if (stack_pointers[active_stack] >= 6'd63) begin
             overflow_status[active_stack] <= 1'b1;
             stack_overflow_o <= 1'b1;
@@ -176,7 +178,7 @@ module stack_unit (
         end
 
         STACK_POPPING: begin
-          // Check for underflow (stack empty when pointer is at 0)
+          // Pop removes the current top element by decrementing SP.
           if (stack_pointers[active_stack] == STACK_EMPTY) begin
             underflow_status[active_stack] <= 1'b1;
             stack_underflow_o <= 1'b1;
@@ -190,8 +192,7 @@ module stack_unit (
         end
 
         STACK_INDEXING: begin
-          // Calculate absolute index from stack pointer - offset - 1
-          // For empty ascending: offset 0 = top of stack (SP-1), offset 1 = SP-2, etc.
+          // Convert a top-relative offset into an absolute stack array index.
 
           if (stack_offset_i >= stack_pointers[active_stack] || stack_pointers[active_stack] == STACK_EMPTY) begin
             // Index out of bounds or empty stack

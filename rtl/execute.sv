@@ -1,6 +1,8 @@
 `define NUM_REGISTERS 32
 `define NUM_ALUS 8
 
+// Main execution engine. It resolves the source value for an instruction and
+// then routes that value to the selected destination unit.
 module execute (
     input wire clk_i,
     input wire rst_i,
@@ -15,7 +17,7 @@ module execute (
     bus_if.master data_bus,
     output logic done_o
 );
-  // Registers.
+  // Architectural register file: 32 independent 32-bit cells.
   logic reg_unit_select[`NUM_REGISTERS-1:0];
   logic reg_unit_write[`NUM_REGISTERS-1:0];
   logic [31:0] reg_in_data[`NUM_REGISTERS-1:0];
@@ -29,7 +31,7 @@ module execute (
       .data_o (reg_out_data)
   );
 
-  // ALUs.
+  // ALU bank: 8 independently addressable compute lanes.
   logic alu_select[`NUM_ALUS-1:0];
   logic [31:0] alu_in_data_a[`NUM_ALUS-1:0];
   logic [31:0] alu_in_data_b[`NUM_ALUS-1:0];
@@ -45,7 +47,7 @@ module execute (
       .data_o(alu_out_data)
   );
 
-  // Stack unit
+  // Shared stack unit implementing 8 logical stacks.
   logic [2:0] stack_select;
   logic stack_push, stack_pop;
   logic [5:0] stack_offset;
@@ -69,7 +71,7 @@ module execute (
       .stack_underflow_o(stack_underflow)
   );
 
-  // Execution state machine.
+  // Execution is split into source resolution and destination writeback.
   typedef enum {
     EXEC_START_SRC,
     EXEC_SRC_MEM_RETRIEVE,
@@ -116,7 +118,7 @@ module execute (
           stack_index_read = 1'b0;
           stack_index_write = 1'b0;
           case (src_unit_i) inside
-            // Start source memory retrieval
+            // Source is memory-backed, so begin a bus read.
             UNIT_MEMORY_OPERAND, UNIT_MEMORY_IMMEDIATE, UNIT_REGISTER_POINTER: begin
               case (src_unit_i)
                 UNIT_MEMORY_OPERAND: data_bus.addr = src_operand_i;
@@ -131,6 +133,7 @@ module execute (
               exec_state = EXEC_SRC_MEM_RETRIEVE;
             end
             UNIT_REGISTER: begin
+              // Read a register directly out of the register bank.
               reg_unit_select[src_immediate_i[4:0]] = 1'b1;
               src_value = reg_out_data[src_immediate_i[4:0]];
               exec_state = EXEC_START_DST;
@@ -144,6 +147,7 @@ module execute (
               exec_state = EXEC_START_DST;
             end
             UNIT_ALU_RESULT: begin
+              // ALU outputs are registered, so fetch them in a separate state.
               alu_select[src_immediate_i[2:0]] = 1'b1;
               exec_state = EXEC_SRC_ALU_RETRIEVE;
             end
@@ -160,13 +164,13 @@ module execute (
               exec_state = EXEC_START_DST;
             end
             UNIT_STACK_PUSH_POP: begin
-              // Stack pop operation
+              // Pop returns the top-of-stack as the source value.
               stack_select = src_immediate_i[2:0];  // Stack ID from bits 2:0
               stack_pop = 1'b1;
               exec_state = EXEC_SRC_STACK_WAIT;
             end
             UNIT_STACK_INDEX: begin
-              // Stack indexed read
+              // Indexed stack reads implement peek-like behavior.
               stack_select = src_immediate_i[2:0];     // Stack ID from bits 2:0
               stack_offset = src_immediate_i[8:3];     // Offset from bits 8:3 (6 bits)
               stack_index_read = 1'b1;
@@ -208,10 +212,8 @@ module execute (
             exec_state = EXEC_START_DST;
           end
         end
-        // TODO: In some cases we might not need to wait on another cycle before performing
-        // the destination. Look to optimize for that by moving the state machine along
-        // without waiting for the next clock in those cases.
-        // Register to register for example should be one cycle.
+        // Destination writeback consumes the resolved source value and applies
+        // the instruction side effect.
         EXEC_START_DST: begin
           case (dst_unit_i) inside
             UNIT_REGISTER: begin
@@ -224,6 +226,7 @@ module execute (
               end
             end
             UNIT_ALU_LEFT: begin
+              // Writing ALU_LEFT/RIGHT/OPERATOR configures an ALU lane.
               alu_in_data_a[dst_immediate_i[2:0]] = src_value;
               begin
                 done_o = 1'b1;
@@ -258,21 +261,22 @@ module execute (
 
               data_bus.valid = 1'b1;
               data_bus.write_data = src_value;
-              data_bus.wstrb = 4'b1111;  // TODO... hm..
+              // Only full-word writes are currently implemented.
+              data_bus.wstrb = 4'b1111;
               begin
                 done_o = 1'b1;
                 exec_state = EXEC_START_SRC;
               end
             end
             UNIT_STACK_PUSH_POP: begin
-              // Stack push operation
+              // Push writes src_value to the selected stack.
               stack_select = dst_immediate_i[2:0];  // Stack ID from bits 2:0
               stack_data_in = src_value;
               stack_push = 1'b1;
               exec_state = EXEC_DST_STACK_WAIT;
             end
             UNIT_STACK_INDEX: begin
-              // Stack indexed write
+              // Indexed writes implement poke-like behavior.
               stack_select = dst_immediate_i[2:0];     // Stack ID from bits 2:0
               stack_offset = dst_immediate_i[8:3];     // Offset from bits 8:3 (6 bits)
               stack_data_in = src_value;
@@ -288,7 +292,7 @@ module execute (
 
         end
         EXEC_DST_STACK_WAIT: begin
-          // Clear stack control signals after first cycle
+          // Clear the one-cycle stack command strobes while waiting for ready.
           stack_push = 1'b0;
           stack_pop = 1'b0;
           stack_index_read = 1'b0;

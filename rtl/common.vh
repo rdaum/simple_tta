@@ -1,6 +1,8 @@
 `ifndef common_vh_
 `define common_vh_
 
+// Shared instruction encoding enums used across fetch, decode, execute,
+// and mirrored in the Rust assembler implementation.
 typedef enum bit [3:0] {
     ALU_NOP = 4'h000,
     ALU_ADD = 4'h001,

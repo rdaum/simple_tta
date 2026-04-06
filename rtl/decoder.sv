@@ -1,3 +1,5 @@
+// Unpacks the fixed-width instruction word into source and destination routing
+// information plus flags indicating whether extra operand words are required.
 module decoder (
     input wire clk_i,
     input wire rst_i,
@@ -21,6 +23,11 @@ module decoder (
       need_src_operand_o = 1'b0;
       need_dst_operand_o = 1'b0;
     end else if (sel_i) begin
+      // Instruction layout:
+      // [3:0]   src unit
+      // [15:4]  src immediate
+      // [19:16] dst unit
+      // [31:20] dst immediate
       src_unit_o = Unit'(op_i[3:0]);
       si_o = op_i[15:4];
       dst_unit_o = Unit'(op_i[19:16]);

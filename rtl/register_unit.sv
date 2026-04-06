@@ -1,3 +1,5 @@
+// Single 32-bit register cell. execute.sv instantiates 32 of these to form
+// the architectural register file.
 module register_unit (
     input wire rst_i,
     input wire clk_i,

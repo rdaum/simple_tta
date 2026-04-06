@@ -1,5 +1,6 @@
 `include "common.vh"
 
+// One ALU lane. execute.sv instantiates 8 lanes and selects them by index.
 module alu_unit (
     input wire rst_i,
     input wire clk_i,
@@ -15,6 +16,7 @@ module alu_unit (
     if (rst_i) begin
       data_o <= 32'b0;
     end else if (sel_i) begin
+      // Results are registered, so ALU reads are visible on a later cycle.
       case (oper_i)
         ALU_NOP: data_o <= 32'b0;
         ALU_ADD: data_o <= a_data_i + b_data_i;

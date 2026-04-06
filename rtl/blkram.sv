@@ -1,3 +1,5 @@
+// Simple block RAM behind the shared bus interface. Used for boot/program
+// memory in the FPGA top and simulation top.
 module blkram #(
     parameter RAM_WIDTH = 32,  // Specify RAM data width
     parameter RAM_DEPTH = 1024,  // Specify RAM depth (number of entries)
@@ -41,6 +43,7 @@ module blkram #(
       case (state)
         0: begin
           if (data_bus.valid) begin
+            // Accept the request and return the current word on read_data.
             ready_reg <= 1'b1;
             if (data_bus.wstrb != 4'b0) begin
               if (data_bus.wstrb[3]) bram_reg[data_bus.addr][31:24] <= data_bus.write_data[31:24];
@@ -53,6 +56,7 @@ module blkram #(
           end
         end
         1: begin
+          // Drop ready again to create a simple one-cycle handshake.
           ready_reg <= 1'b0;
           state <= 1'b0;
         end

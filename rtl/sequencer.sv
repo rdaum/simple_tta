@@ -1,3 +1,5 @@
+// Fetch state machine for variable-length instructions. It reads the opcode
+// word first, then conditionally fetches up to two extension operands.
 module sequencer (
     input wire clk_i,
     input wire rst_i,
@@ -26,6 +28,7 @@ module sequencer (
     SEQ_READ_DST_OPERAND
   } sequencer_state;
 
+  // The decoder samples op_o only during the dedicated decode state.
   assign decoder_enable_o = sequencer_state == SEQ_DECODE;
 
   always @(posedge clk_i) begin
@@ -37,6 +40,7 @@ module sequencer (
     end else if (sel_i) begin
       case (sequencer_state)
         SEQ_START: begin
+          // Begin reading the next opcode at the current program counter.
           instr_bus.valid = 1'b1;
           instr_bus.instr = 1'b1;
           instr_bus.addr = pc_o;
@@ -50,6 +54,7 @@ module sequencer (
           end
         end
         SEQ_DECODE: begin
+          // Extension operands, when needed, live in subsequent program words.
           if (need_src_operand_i || need_dst_operand_i) begin
             instr_bus.valid = 1'b1;
             instr_bus.instr = 1'b0;

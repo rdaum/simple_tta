@@ -1,4 +1,6 @@
 `include "common.vh"
+// Top-level TTA core. The sequencer fetches the instruction stream,
+// the decoder unpacks each instruction, and execute performs the move.
 module tta (
     input wire rst_i,
     input wire clk_i,
@@ -21,6 +23,7 @@ module tta (
   logic need_dst_operand;
   logic decoder_enable;
   logic sequencer_done;
+  // Hold off the next fetch until the current execute phase has completed.
   wire  pause_sequencer = sequencer_done && ~done_exec;
   sequencer sequencer (
       .clk_i(clk_i),

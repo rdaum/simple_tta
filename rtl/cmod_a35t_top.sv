@@ -1,3 +1,5 @@
+// FPGA-facing wrapper that connects the TTA core to boot block RAM and an
+// external SRAM-style interface.
 module cmod_a35t_top (
     input wire rst_i,
     input wire sysclk_i,
@@ -26,6 +28,7 @@ module cmod_a35t_top (
 
   bus_if data_bus ();
   always_comb begin
+    // Bridge the core data bus to external SRAM-style pins.
     data_bus.read_data = sram_data_i;
     data_bus.ready = sram_ready_i;
     sram_data_o = data_bus.write_data;

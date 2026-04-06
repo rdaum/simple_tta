@@ -1,3 +1,5 @@
+// Common bus abstraction used for both instruction fetch and data accesses.
+// Reads use wstrb == 0; writes drive write_data and one or more write strobes.
 interface bus_if;
   logic [3:0] wstrb;
   logic [31:0] write_data;
