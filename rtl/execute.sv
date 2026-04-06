@@ -1,21 +1,31 @@
-`define NUM_REGISTERS 32
-`define NUM_ALUS 8
+`define NUM_REGISTERS 32  // Architectural register count (addressed by imm[4:0])
+`define NUM_ALUS 8         // Independent ALU lanes (addressed by imm[2:0])
 
-// Main execution engine. It resolves the source value for an instruction and
-// then routes that value to the selected destination unit.
+// Main execution engine. Each TTA instruction is a single *move* from a
+// source unit to a destination unit. This module resolves the source value
+// (EXEC_START_SRC phase), then writes it to the destination (EXEC_START_DST
+// phase). Memory and stack accesses require extra wait states; register and
+// ALU moves typically complete in one or two cycles.
+//
+// Immediate field bit layout (12 bits from the instruction word):
+//   Registers:       [4:0] = register index (0-31)
+//   ALU lanes:       [2:0] = lane index (0-7)
+//   Stack push/pop:  [2:0] = stack ID (0-7)
+//   Stack index:     [2:0] = stack ID, [8:3] = offset from top (0-63)
+//   Memory imm:      full 12 bits zero-extended to a 32-bit word address
 module execute (
-    input wire clk_i,
-    input wire rst_i,
-    input wire sel_i,
-    input wire [31:0] pc_i,
-    input Unit src_unit_i,
-    input logic [11:0] src_immediate_i,
-    input logic [31:0] src_operand_i,
-    input Unit dst_unit_i,
-    input logic [11:0] dst_immediate_i,
-    input logic [31:0] dst_operand_i,
-    bus_if.master data_bus,
-    output logic done_o
+    input wire clk_i,                   // System clock
+    input wire rst_i,                   // Synchronous reset (active high)
+    input wire sel_i,                   // Execute enable — from sequencer done
+    input wire [31:0] pc_i,             // Current program counter (for UNIT_PC reads)
+    input Unit src_unit_i,              // Source unit selector (from decoder)
+    input logic [11:0] src_immediate_i, // Source immediate field
+    input logic [31:0] src_operand_i,   // Source 32-bit operand (from sequencer)
+    input Unit dst_unit_i,              // Destination unit selector (from decoder)
+    input logic [11:0] dst_immediate_i, // Destination immediate field
+    input logic [31:0] dst_operand_i,   // Destination 32-bit operand (from sequencer)
+    bus_if.master data_bus,             // Data memory bus (loads and stores)
+    output logic done_o                 // Pulses high when the move is complete
 );
   // Architectural register file: 32 independent 32-bit cells.
   logic reg_unit_select[`NUM_REGISTERS-1:0];
@@ -71,14 +81,22 @@ module execute (
       .stack_underflow_o(stack_underflow)
   );
 
-  // Execution is split into source resolution and destination writeback.
+  // Execution FSM: first resolve the source value, then write to destination.
+  //
+  //  EXEC_START_SRC ──→ (immediate units) ──→ EXEC_START_DST ──→ done
+  //       │                                         │
+  //       ├─→ EXEC_SRC_MEM_RETRIEVE ──→ EXEC_START_DST
+  //       ├─→ EXEC_SRC_ALU_RETRIEVE ──→ EXEC_START_DST
+  //       └─→ EXEC_SRC_STACK_WAIT   ──→ EXEC_START_DST
+  //                                         │
+  //                                         └─→ EXEC_DST_STACK_WAIT ──→ done
   typedef enum {
-    EXEC_START_SRC,
-    EXEC_SRC_MEM_RETRIEVE,
-    EXEC_SRC_ALU_RETRIEVE,
-    EXEC_SRC_STACK_WAIT,
-    EXEC_START_DST,
-    EXEC_DST_STACK_WAIT
+    EXEC_START_SRC,       // Begin source resolution
+    EXEC_SRC_MEM_RETRIEVE,// Wait for data_bus.ready on a memory read
+    EXEC_SRC_ALU_RETRIEVE,// Extra cycle to latch registered ALU output
+    EXEC_SRC_STACK_WAIT,  // Wait for stack_ready after pop / peek
+    EXEC_START_DST,       // Route src_value to the destination unit
+    EXEC_DST_STACK_WAIT   // Wait for stack_ready after push / poke
   } ExecState;
   ExecState exec_state;
   logic [31:0] src_value;

@@ -1,14 +1,18 @@
-// Simple block RAM behind the shared bus interface. Used for boot/program
-// memory in the FPGA top and simulation top.
+// Simple synchronous block RAM behind the shared bus interface. Used for
+// boot/program memory in the FPGA top and simulation top.
+//
+// Timing: requests take two cycles. On cycle 0 the address is latched and
+// the read/write is performed; on cycle 1 ready pulses high and read_data
+// is valid. Per-byte write strobes are supported (wstrb bits correspond to
+// bytes [7:0], [15:8], [23:16], [31:24]).
 module blkram #(
-    parameter RAM_WIDTH = 32,  // Specify RAM data width
-    parameter RAM_DEPTH = 1024,  // Specify RAM depth (number of entries)
-    parameter INIT_FILE = ""                     // Specify name/location of RAM initialization file if using one (leave blank if not)
+    parameter RAM_WIDTH = 32,       // Data width in bits
+    parameter RAM_DEPTH = 1024,     // Number of words
+    parameter INIT_FILE = ""        // Optional hex init file (blank = zero-fill)
 ) (
-    input wire clk_i,
-    input wire rst_i,
-
-    bus_if.slave data_bus
+    input wire clk_i,               // System clock
+    input wire rst_i,               // Synchronous reset (active high)
+    bus_if.slave data_bus            // Bus slave port
 );
   (* ram_style = "block" *) reg [RAM_WIDTH-1:0] bram_reg[RAM_DEPTH-1:0];
   reg [31:0] reg_data;
@@ -32,6 +36,13 @@ module blkram #(
     end
   endgenerate
 
+  // Two-state handshake FSM:
+  //   State 0 (IDLE): wait for valid, latch address, perform read/write,
+  //                    assert ready.
+  //   State 1 (ACK):  deassert ready, return to idle.
+  //
+  // Read data appears on reg_data one cycle after the request, at the same
+  // time ready goes high.
   logic state;
   reg   ready_reg;
   always @(posedge clk_i) begin
@@ -43,20 +54,21 @@ module blkram #(
       case (state)
         0: begin
           if (data_bus.valid) begin
-            // Accept the request and return the current word on read_data.
             ready_reg <= 1'b1;
+            // Per-byte write strobes: each bit controls one byte lane.
             if (data_bus.wstrb != 4'b0) begin
               if (data_bus.wstrb[3]) bram_reg[data_bus.addr][31:24] <= data_bus.write_data[31:24];
               if (data_bus.wstrb[2]) bram_reg[data_bus.addr][23:16] <= data_bus.write_data[23:16];
               if (data_bus.wstrb[1]) bram_reg[data_bus.addr][15:8] <= data_bus.write_data[15:8];
               if (data_bus.wstrb[0]) bram_reg[data_bus.addr][7:0] <= data_bus.write_data[7:0];
             end
+            // Simultaneous read: returns the value *before* the write on this cycle.
             reg_data <= bram_reg[data_bus.addr];
             state <= 1;
           end
         end
         1: begin
-          // Drop ready again to create a simple one-cycle handshake.
+          // Deassert ready to complete the one-cycle handshake pulse.
           ready_reg <= 1'b0;
           state <= 1'b0;
         end

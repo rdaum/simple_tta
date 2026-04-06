@@ -1,14 +1,19 @@
 `include "common.vh"
-// Top-level TTA core. The sequencer fetches the instruction stream,
-// the decoder unpacks each instruction, and execute performs the move.
+// Top-level TTA core. Three pipeline-ish stages cooperate in lock-step:
+//
+//   sequencer  — fetches opcode + optional operand words from instr_bus
+//   decoder    — splits the opcode into source/destination unit + immediates
+//   execute    — reads the source, writes the destination via data_bus
+//
+// All addresses are *word*-addressed (each address increment = one 32-bit
+// word). The sequencer and execute stages handshake through done signals
+// so that the next fetch does not begin until the current move completes.
 module tta (
-    input wire rst_i,
-    input wire clk_i,
-
-    output wire instr_done_o,
-
-    bus_if.master instr_bus,
-    bus_if.master data_bus
+    input wire rst_i,           // Synchronous reset (active high)
+    input wire clk_i,           // System clock
+    output wire instr_done_o,   // Pulses high for one cycle when a move completes
+    bus_if.master instr_bus,    // Instruction fetch bus (read-only in practice)
+    bus_if.master data_bus      // Data load/store bus
 );
 
   logic [31:0] pc;
