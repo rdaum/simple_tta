@@ -18,8 +18,12 @@ module cmod_a35t_top (
     input logic sram_ready_i,          // SRAM ready / acknowledge
 
     // UART (active pins reserved for future use — currently unconnected)
+    /* verilator lint_off UNUSEDSIGNAL */
     input  wire uart_rxd_i,
+    /* verilator lint_on UNUSEDSIGNAL */
+    /* verilator lint_off UNDRIVEN */
     output wire uart_txd_o
+    /* verilator lint_on UNDRIVEN */
 );
 
   bus_if bootmem_bus ();
@@ -43,12 +47,15 @@ module cmod_a35t_top (
     sram_data_o = data_bus.write_data;
     sram_valid_o = data_bus.valid;
     sram_wstrb_o = data_bus.wstrb;
-    sram_addr_o = data_bus.addr;
+    sram_addr_o = data_bus.addr[18:0];
   end
 
   tta tta (
       .rst_i(rst_i),
       .clk_i(sysclk_i),
+      /* verilator lint_off PINCONNECTEMPTY */
+      .instr_done_o(),
+      /* verilator lint_on PINCONNECTEMPTY */
       .instr_bus(bootmem_bus),
       .data_bus(data_bus)
   );

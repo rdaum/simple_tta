@@ -81,7 +81,6 @@ module sequencer (
   // Queue pointers (1-bit each for a 2-entry queue).
   logic wr_ptr, rd_ptr;
   wire  queue_full  = q_valid[0] && q_valid[1];
-  wire  queue_empty = !q_valid[0] && !q_valid[1];
   wire  queue_has_space = !queue_full;
 
   // The head of the queue is the entry execute will consume.
@@ -102,7 +101,6 @@ module sequencer (
   // enqueueing it as a complete entry.
   logic [31:0] staging_op;
   logic [31:0] staging_src_operand;
-  logic [31:0] staging_dst_operand;
 
   // Fetch address — separate from pc_o. Advances as the fetch FSM
   // reads instruction words. pc_o is only updated on handoff.
@@ -121,6 +119,7 @@ module sequencer (
   logic fetch_stalled_on_branch;
 
   // --- Helpers ---
+  /* verilator lint_off UNUSEDSIGNAL */
   function automatic logic needs_src_op(logic [31:0] raw_op);
     Unit su = Unit'(raw_op[3:0]);
     return su == UNIT_MEMORY_OPERAND || su == UNIT_ABS_OPERAND;
@@ -135,6 +134,7 @@ module sequencer (
     Unit du = Unit'(raw_op[19:16]);
     return du == UNIT_PC || du == UNIT_PC_COND;
   endfunction
+  /* verilator lint_on UNUSEDSIGNAL */
 
   wire [31:0] fetch_pc_plus_1 = fetch_pc + 1;
   wire [31:0] fetch_pc_plus_2 = fetch_pc + 2;
@@ -148,7 +148,6 @@ module sequencer (
       fetch_pc <= 32'b0;
       staging_op <= 32'b0;
       staging_src_operand <= 32'b0;
-      staging_dst_operand <= 32'b0;
       q_valid[0] <= 1'b0;
       q_valid[1] <= 1'b0;
       wr_ptr <= 1'b0;

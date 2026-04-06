@@ -8,8 +8,6 @@
 // computed from the current operands and operator. No sel_i or clock
 // delay is needed to read the result.
 module alu_unit (
-    input wire rst_i,               // Synchronous reset (active high)
-    input wire clk_i,               // System clock
     input ALU_OPERATOR oper_i,      // Operation selector (see ALU_OPERATOR enum)
     input  logic [31:0] a_data_i,   // Left operand (A)
     input  logic [31:0] b_data_i,   // Right operand (B)

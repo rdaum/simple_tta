@@ -17,9 +17,6 @@ module blkram #(
   (* ram_style = "block" *) reg [RAM_WIDTH-1:0] bram_reg[RAM_DEPTH-1:0];
   reg [31:0] reg_data;
 
-  wire [31:0] bus_addr;
-  assign bus_addr = data_bus.addr;
-
   generate
     /* verilator lint_off WIDTH */
     if (INIT_FILE != "") begin : use_init_file

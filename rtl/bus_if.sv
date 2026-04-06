@@ -8,6 +8,9 @@
 //   3. Master may deassert valid after seeing ready.
 //
 // All addresses are word-aligned (each increment = one 32-bit word).
+// Not all masters use all signals (e.g. data bus doesn't use instr,
+// addr upper bits depend on memory size). Suppress per-instance warnings.
+/* verilator lint_off UNUSEDSIGNAL */
 interface bus_if;
   logic [3:0]  wstrb;       // Per-byte write strobes (0 = read, nonzero = write)
   logic [31:0] write_data;  // Data to write (valid when wstrb != 0)
@@ -21,4 +24,5 @@ interface bus_if;
   modport master(input read_data, ready, output wstrb, write_data, addr, valid, instr);
 
   modport slave(input wstrb, write_data, addr, valid, instr, output read_data, ready);
+/* verilator lint_on UNUSEDSIGNAL */
 endinterface : bus_if

@@ -43,9 +43,11 @@ module stack_unit (
   // Stack pointers: each points at the next free slot (empty-ascending).
   reg [STACK_PTR_BITS-1:0] stack_pointers[0:7];
 
-  // Per-stack error status.
+  // Per-stack error status (accumulated for external debug probes).
+  /* verilator lint_off UNUSEDSIGNAL */
   reg [7:0] overflow_status;
   reg [7:0] underflow_status;
+  /* verilator lint_on UNUSEDSIGNAL */
 
   // FSM state.
   typedef enum logic [1:0] {

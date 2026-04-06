@@ -36,7 +36,6 @@ module execute (
   logic reg_unit_select[`NUM_REGISTERS-1:0];
   logic reg_unit_write[`NUM_REGISTERS-1:0];
   logic [31:0] reg_in_data[`NUM_REGISTERS-1:0];
-  logic [31:0] reg_out_data[`NUM_REGISTERS-1:0];
   logic [31:0] reg_raw_data[`NUM_REGISTERS-1:0];  // Combinational read for tagged ops
   register_unit register_units[`NUM_REGISTERS-1:0] (
       .rst_i    (rst_i),
@@ -44,7 +43,6 @@ module execute (
       .sel_i    (reg_unit_select),
       .wstrb_i  (reg_unit_write),
       .data_i   (reg_in_data),
-      .data_o   (reg_out_data),
       .data_raw_o(reg_raw_data)
   );
 
@@ -55,8 +53,6 @@ module execute (
   logic [31:0] alu_out_data[`NUM_ALUS-1:0];
   ALU_OPERATOR alu_operation[`NUM_ALUS-1:0];
   alu_unit alu_unit[`NUM_ALUS-1:0] (
-      .rst_i(rst_i),
-      .clk_i(clk_i),
       .oper_i(alu_operation),
       .a_data_i(alu_in_data_a),
       .b_data_i(alu_in_data_b),
@@ -69,7 +65,9 @@ module execute (
   logic [5:0] stack_offset;
   logic stack_index_read, stack_index_write;
   logic [31:0] stack_data_in, stack_data_out;
+  /* verilator lint_off UNUSEDSIGNAL */
   logic stack_ready, stack_overflow, stack_underflow;
+  /* verilator lint_on UNUSEDSIGNAL */
 
   stack_unit stack_unit_inst (
       .clk_i(clk_i),
@@ -181,6 +179,7 @@ module execute (
   endfunction
 
   // Extract and zero-extend sub-word data from a 32-bit bus read.
+  /* verilator lint_off UNUSEDSIGNAL */
   function automatic logic [31:0] extract_read(logic [31:0] data, AccessWidth w, logic [1:0] off);
     logic [31:0] shifted;
     shifted = data >> (off * 8);
@@ -190,6 +189,7 @@ module execute (
       default:         return data;  // ACCESS_WORD
     endcase
   endfunction
+  /* verilator lint_on UNUSEDSIGNAL */
 
   always @(posedge clk_i) begin
     if (rst_i) begin
