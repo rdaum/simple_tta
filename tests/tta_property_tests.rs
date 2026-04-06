@@ -2937,20 +2937,24 @@ mod property_tests {
         tta.instr_data_read_i = 0;
         tta.data_data_read_i = 0;
 
+        // Skipped instructions write to DISTINCT addresses (mem[300], mem[301])
+        // so a transiently executed wrong-path store is observable even if the
+        // correct-path store later overwrites a shared address.
+        //
         // addr 0-1: jump to addr 6
-        // addr 2-3: 2-word store 0xBAD → mem[100] (MEMORY_OPERAND dst, may be prefetched)
-        // addr 4-5: 2-word store 0xBAD → mem[101] (may be prefetched)
+        // addr 2-3: 2-word store 0xBAD → mem[300] (wrong path, should NOT execute)
+        // addr 4-5: 2-word store 0xBAD → mem[301] (wrong path, should NOT execute)
         // addr 6:   store 0xACE → mem[100] (branch target)
         // addr 7:   store 0xBEE → mem[101]
         let program = vec![
             // addr 0-1: jump
             instr().src(Unit::UNIT_ABS_OPERAND).soperand(6).dst(Unit::UNIT_PC),
-            // addr 2-3: should be skipped (2-word: ABS_OPERAND src)
+            // addr 2-3: wrong path — distinct sink address
             instr().src(Unit::UNIT_ABS_OPERAND).soperand(0xBAD)
-                   .dst(Unit::UNIT_MEMORY_IMMEDIATE).di(100),
-            // addr 4-5: should be skipped
+                   .dst(Unit::UNIT_MEMORY_IMMEDIATE).di(300),
+            // addr 4-5: wrong path — distinct sink address
             instr().src(Unit::UNIT_ABS_OPERAND).soperand(0xBAD)
-                   .dst(Unit::UNIT_MEMORY_IMMEDIATE).di(101),
+                   .dst(Unit::UNIT_MEMORY_IMMEDIATE).di(301),
             // addr 6: branch target
             instr().src(Unit::UNIT_ABS_IMMEDIATE).si(0xACE)
                    .dst(Unit::UNIT_MEMORY_IMMEDIATE).di(100),
@@ -2968,9 +2972,13 @@ mod property_tests {
         helper.run_for_cycles(&mut tta, 300);
 
         prop_assert_eq!(helper.get_data_memory(100), 0xACE,
-            "Branch target should write 0xACE, not 0xBAD from prefetched multiword instr");
+            "Branch target should write 0xACE");
         prop_assert_eq!(helper.get_data_memory(101), 0xBEE,
             "Instruction after branch target should execute");
+        prop_assert_eq!(helper.get_data_memory(300), 0,
+            "Wrong-path store to mem[300] should never have executed");
+        prop_assert_eq!(helper.get_data_memory(301), 0,
+            "Wrong-path store to mem[301] should never have executed");
     }
 
     /// Back-to-back instructions where the first is multi-cycle (memory
@@ -3099,25 +3107,28 @@ mod property_tests {
         tta.instr_data_read_i = 0;
         tta.data_data_read_i = 0;
 
+        // Skipped instructions write to DISTINCT addresses (mem[300], mem[301])
+        // so transient wrong-path execution is observable.
+        //
         // addr 0-1: jump to addr 4
-        // addr 2:   store 0xBAD1 → mem[100] (skipped)
+        // addr 2:   store 0xBA1 → mem[300] (wrong path 1, should NOT execute)
         // addr 3:   nop padding
         // addr 4-5: jump to addr 8
-        // addr 6:   store 0xBAD2 → mem[100] (skipped)
+        // addr 6:   store 0xBA2 → mem[301] (wrong path 2, should NOT execute)
         // addr 7:   nop padding
-        // addr 8:   store 0xOK → mem[100]
+        // addr 8:   store 0x999 → mem[100]
         // addr 9:   read PC → mem[101]
         let program = vec![
             // addr 0-1: first jump
             instr().src(Unit::UNIT_ABS_OPERAND).soperand(4).dst(Unit::UNIT_PC),
-            // addr 2 (skipped)
-            instr().src(Unit::UNIT_ABS_IMMEDIATE).si(0xBA1).dst(Unit::UNIT_MEMORY_IMMEDIATE).di(100),
+            // addr 2: wrong path — distinct sink
+            instr().src(Unit::UNIT_ABS_IMMEDIATE).si(0xBA1).dst(Unit::UNIT_MEMORY_IMMEDIATE).di(300),
             // addr 3 padding
             instr().src(Unit::UNIT_ABS_IMMEDIATE).si(0).dst(Unit::UNIT_REGISTER).di(0),
             // addr 4-5: second jump
             instr().src(Unit::UNIT_ABS_OPERAND).soperand(8).dst(Unit::UNIT_PC),
-            // addr 6 (skipped)
-            instr().src(Unit::UNIT_ABS_IMMEDIATE).si(0xBA2).dst(Unit::UNIT_MEMORY_IMMEDIATE).di(100),
+            // addr 6: wrong path — distinct sink
+            instr().src(Unit::UNIT_ABS_IMMEDIATE).si(0xBA2).dst(Unit::UNIT_MEMORY_IMMEDIATE).di(301),
             // addr 7 padding
             instr().src(Unit::UNIT_ABS_IMMEDIATE).si(0).dst(Unit::UNIT_REGISTER).di(0),
             // addr 8: final target
@@ -3138,6 +3149,10 @@ mod property_tests {
             "Only the final branch target should write to mem[100]");
         prop_assert_eq!(helper.get_data_memory(101), 10,
             "PC at addr 9 should be 10 after two consecutive jumps");
+        prop_assert_eq!(helper.get_data_memory(300), 0,
+            "Wrong-path store after first jump should never execute");
+        prop_assert_eq!(helper.get_data_memory(301), 0,
+            "Wrong-path store after second jump should never execute");
     }
 
     }
