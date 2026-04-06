@@ -2855,4 +2855,159 @@ mod tests {
 
         Ok(())
     }
+
+    // --- Tagged stack access tests ---
+
+    #[test]
+    fn test_stack_pop_tag_and_value_modes() -> Result<(), Box<dyn std::error::Error>> {
+        let runtime = create_runtime()?;
+        let mut tta = runtime
+            .create_model_simple::<TtaTestbench>()
+            .map_err(|e| format!("Failed to create model: {:?}", e))?;
+        let mut helper = TtaTestHelper::new();
+
+        tta.rst_i = 1;
+        tta.clk_i = 0;
+        tta.instr_ready_i = 0;
+        tta.data_ready_i = 0;
+        tta.instr_data_read_i = 0;
+        tta.data_data_read_i = 0;
+
+        // Push a tagged value 0xDEADBEE1 (tag=1, payload=0xDEADBEE0)
+        // Then pop three times in different modes.
+        let program = vec![
+            // Push the tagged value three times (need three copies to pop three times)
+            instr().push_immediate(0, 0xDEADBEE1),
+            instr().push_immediate(0, 0xDEADBEE1),
+            instr().push_immediate(0, 0xDEADBEE1),
+            // Pop RAW → mem[100]
+            instr()
+                .src_pop(0, RegMode::Raw)
+                .dst(Unit::UNIT_MEMORY_IMMEDIATE).di(100),
+            // Pop VALUE → mem[101]
+            instr()
+                .src_pop(0, RegMode::Value)
+                .dst(Unit::UNIT_MEMORY_IMMEDIATE).di(101),
+            // Pop TAG → mem[102]
+            instr()
+                .src_pop(0, RegMode::Tag)
+                .dst(Unit::UNIT_MEMORY_IMMEDIATE).di(102),
+        ];
+
+        let mut machine_code = Vec::new();
+        for i in &program {
+            machine_code.extend(i.assemble());
+        }
+        helper.load_instructions(&machine_code, 0);
+        helper.run_until_reset_released(&mut tta)?;
+        helper.run_for_cycles(&mut tta, 300);
+
+        assert_eq!(helper.get_data_memory(100), 0xDEADBEE1, "RAW pop should return full tagged word");
+        assert_eq!(helper.get_data_memory(101), 0xDEADBEE0, "VALUE pop should zero tag bits");
+        assert_eq!(helper.get_data_memory(102), 1, "TAG pop should return only tag bits");
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_stack_peek_tag_mode() -> Result<(), Box<dyn std::error::Error>> {
+        let runtime = create_runtime()?;
+        let mut tta = runtime
+            .create_model_simple::<TtaTestbench>()
+            .map_err(|e| format!("Failed to create model: {:?}", e))?;
+        let mut helper = TtaTestHelper::new();
+
+        tta.rst_i = 1;
+        tta.clk_i = 0;
+        tta.instr_ready_i = 0;
+        tta.data_ready_i = 0;
+        tta.instr_data_read_i = 0;
+        tta.data_data_read_i = 0;
+
+        // Push two tagged values with different tags, then peek at each
+        // in TAG mode for type dispatch.
+        let program = vec![
+            instr().push_immediate(0, 0x00000100 | 1), // tag=1 (cons)
+            instr().push_immediate(0, 0x00000200 | 2), // tag=2 (symbol)
+            // Peek offset 0 (top = symbol) TAG → mem[100]
+            instr()
+                .src_peek(0, 0, RegMode::Tag)
+                .dst(Unit::UNIT_MEMORY_IMMEDIATE).di(100),
+            // Peek offset 1 (second = cons) TAG → mem[101]
+            instr()
+                .src_peek(0, 1, RegMode::Tag)
+                .dst(Unit::UNIT_MEMORY_IMMEDIATE).di(101),
+            // Peek offset 0 VALUE → mem[102]
+            instr()
+                .src_peek(0, 0, RegMode::Value)
+                .dst(Unit::UNIT_MEMORY_IMMEDIATE).di(102),
+        ];
+
+        let mut machine_code = Vec::new();
+        for i in &program {
+            machine_code.extend(i.assemble());
+        }
+        helper.load_instructions(&machine_code, 0);
+        helper.run_until_reset_released(&mut tta)?;
+        helper.run_for_cycles(&mut tta, 300);
+
+        assert_eq!(helper.get_data_memory(100), 2, "Top of stack tag should be 2 (symbol)");
+        assert_eq!(helper.get_data_memory(101), 1, "Second entry tag should be 1 (cons)");
+        assert_eq!(helper.get_data_memory(102), 0x200, "Top of stack value should be 0x200 (tag stripped)");
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_stack_pop_tag_to_cond_for_dispatch() -> Result<(), Box<dyn std::error::Error>> {
+        // Lisp-style pattern: pop, check tag, branch based on type.
+        let runtime = create_runtime()?;
+        let mut tta = runtime
+            .create_model_simple::<TtaTestbench>()
+            .map_err(|e| format!("Failed to create model: {:?}", e))?;
+        let mut helper = TtaTestHelper::new();
+
+        tta.rst_i = 1;
+        tta.clk_i = 0;
+        tta.instr_ready_i = 0;
+        tta.data_ready_i = 0;
+        tta.instr_data_read_i = 0;
+        tta.data_data_read_i = 0;
+
+        // Push a tagged cons pointer (tag=1), then peek its tag directly
+        // into the condition register for type dispatch.
+        // addr 0-1: push_immediate (2 words)
+        // addr 2:   peek TAG → COND (1 word)
+        // addr 3-4: conditional branch to addr 6 (2 words)
+        // addr 5:   store 0xBAD → mem[400] (should be skipped)
+        // addr 6:   store 0x999 → mem[100] (branch target)
+        let program = vec![
+            instr().push_immediate(0, 0xCAFE0001), // tag=1
+            instr()
+                .src_peek(0, 0, RegMode::Tag)
+                .dst(Unit::UNIT_COND),
+            instr()
+                .src(Unit::UNIT_ABS_OPERAND).soperand(6)
+                .dst(Unit::UNIT_PC_COND),
+            instr()
+                .src(Unit::UNIT_ABS_IMMEDIATE).si(0xBAD)
+                .dst(Unit::UNIT_MEMORY_IMMEDIATE).di(400),
+            instr()
+                .src(Unit::UNIT_ABS_IMMEDIATE).si(0x999)
+                .dst(Unit::UNIT_MEMORY_IMMEDIATE).di(100),
+        ];
+
+        let mut machine_code = Vec::new();
+        for i in &program {
+            machine_code.extend(i.assemble());
+        }
+        helper.load_instructions(&machine_code, 0);
+        helper.run_until_reset_released(&mut tta)?;
+        helper.run_for_cycles(&mut tta, 300);
+
+        assert_eq!(helper.get_data_memory(100), 0x999, "Branch taken: tag was nonzero");
+        assert_eq!(helper.get_data_memory(400), 0, "Skipped instruction must not execute");
+
+        Ok(())
+    }
 }

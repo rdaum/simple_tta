@@ -287,6 +287,32 @@ impl Instr {
         self
     }
 
+    // --- Tagged stack access helpers ---
+    //
+    // Pop and peek with tag mode: RAW (default), VALUE (tag bits zeroed),
+    // TAG (tag bits only). Push/poke writes are always RAW.
+
+    /// Set source to a stack pop with the given tag mode.
+    ///   PUSH_POP immediate: [2:0] = stack_id, [4:3] = mode
+    pub fn src_pop(mut self, stack_id: u8, mode: RegMode) -> Self {
+        assert!(stack_id < 8, "Stack ID must be 0-7");
+        assert!(mode != RegMode::Deref, "DEREF mode not applicable to stacks");
+        self.src_unit = Unit::UNIT_STACK_PUSH_POP;
+        self.si = (stack_id as u16) | ((mode as u16 & 0x3) << 3);
+        self
+    }
+
+    /// Set source to a stack peek (indexed read) with the given tag mode.
+    ///   INDEX immediate: [2:0] = stack_id, [8:3] = offset, [10:9] = mode
+    pub fn src_peek(mut self, stack_id: u8, offset: u8, mode: RegMode) -> Self {
+        assert!(stack_id < 8, "Stack ID must be 0-7");
+        assert!(offset < 64, "Stack offset must be 0-63");
+        assert!(mode != RegMode::Deref, "DEREF mode not applicable to stacks");
+        self.src_unit = Unit::UNIT_STACK_INDEX;
+        self.si = (stack_id as u16) | ((offset as u16) << 3) | ((mode as u16 & 0x3) << 9);
+        self
+    }
+
     // --- Sub-word memory access helpers ---
     //
     // Sub-word (byte/halfword) access is supported on MEMORY_OPERAND and

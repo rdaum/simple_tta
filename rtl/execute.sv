@@ -158,6 +158,19 @@ module execute (
     dst_deref_offset = dst_immediate_i[9:7];
   end
 
+  // Stack access mode helpers: decode tag mode from the immediate field.
+  //   STACK_PUSH_POP: imm[4:3] = mode (RAW/VALUE/TAG)
+  //   STACK_INDEX:    imm[10:9] = mode (RAW/VALUE/TAG)
+  // Only RAW/VALUE/TAG are meaningful (DEREF is not applicable to stacks).
+  logic [1:0] src_stack_mode;
+  always_comb begin
+    case (src_unit_i)
+      UNIT_STACK_PUSH_POP: src_stack_mode = src_immediate_i[4:3];
+      UNIT_STACK_INDEX:    src_stack_mode = src_immediate_i[10:9];
+      default:             src_stack_mode = 2'b00; // RAW
+    endcase
+  end
+
   // Compute write strobes from access width and byte offset.
   function automatic logic [3:0] width_to_wstrb(AccessWidth w, logic [1:0] off);
     case (w)
@@ -460,7 +473,12 @@ module execute (
           if (!stack_wait_armed) begin
             stack_wait_armed <= 1'b1;
           end else if (stack_ready) begin
-            src_value <= stack_data_out;
+            // Apply tag mode mask to the stack read value.
+            case (src_stack_mode)
+              2'b01:   src_value <= stack_data_out & ~TAG_MASK_32; // VALUE
+              2'b10:   src_value <= stack_data_out & TAG_MASK_32;  // TAG
+              default: src_value <= stack_data_out;                // RAW
+            endcase
             stack_wait_armed <= 1'b0;
             exec_state <= EXEC_START_DST;
           end
