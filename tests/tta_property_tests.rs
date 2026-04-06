@@ -2,7 +2,7 @@ use marlin::verilator::VerilatorRuntime;
 use proptest::prelude::*;
 use std::collections::HashMap;
 
-use tta_sim::{create_tta_runtime, instr, ALUOp, TtaTestbench, Unit};
+use tta_sim::{create_tta_runtime, instr, AccessWidth, ALUOp, RegMode, TtaTestbench, Unit};
 
 fn create_runtime() -> Result<VerilatorRuntime, Box<dyn std::error::Error>> {
     Ok(create_tta_runtime()?)
@@ -1809,5 +1809,555 @@ mod property_tests {
         prop_assert_eq!(empty_pop1, 0, "Empty stack pop should return 0"); // Based on our implementation
 
     }
+
+    // --- Byte/halfword memory access properties ---
+
+    /// Property: Byte write only modifies one byte lane, others are preserved
+    #[test]
+    fn prop_byte_write_preserves_other_lanes(
+        initial in data_value(),
+        write_byte in 0u8..=255,
+        lane in 0u8..4,
+    ) {
+        let runtime = create_runtime().unwrap();
+        let mut tta = runtime.create_model_simple::<TtaTestbench>().unwrap();
+        let mut helper = TtaPropertyHelper::new();
+
+        tta.rst_i = 1;
+        tta.clk_i = 0;
+        tta.instr_ready_i = 1;
+        tta.data_ready_i = 1;
+        tta.instr_data_read_i = 0;
+        tta.data_data_read_i = 0;
+
+        // Pre-fill memory at operand address 50 with initial value
+        helper.set_data_memory(50, initial);
+
+        let program = vec![
+            // Load byte value into r0
+            instr()
+                .src(Unit::UNIT_ABS_IMMEDIATE)
+                .si(write_byte as u16)
+                .dst(Unit::UNIT_REGISTER)
+                .di(0),
+            // Byte write to addr 50, selected lane
+            instr()
+                .src(Unit::UNIT_REGISTER)
+                .si(0)
+                .dst_mem_op(50, AccessWidth::Byte, lane),
+            // Read full word back to verify
+            instr()
+                .src_mem_op(50, AccessWidth::Word, 0)
+                .dst(Unit::UNIT_REGISTER)
+                .di(1),
+            instr()
+                .src(Unit::UNIT_REGISTER)
+                .si(1)
+                .dst(Unit::UNIT_MEMORY_IMMEDIATE)
+                .di(100),
+        ];
+
+        let mut machine_code = Vec::new();
+        for instr in program {
+            machine_code.extend(instr.assemble());
+        }
+        helper.load_instructions(&machine_code, 0);
+        helper.run_until_reset_released(&mut tta).unwrap();
+        helper.run_for_cycles(&mut tta, 200);
+
+        let result = helper.get_data_memory(100);
+        let mut expected_bytes = initial.to_le_bytes();
+        expected_bytes[lane as usize] = write_byte;
+        let expected = u32::from_le_bytes(expected_bytes);
+
+        prop_assert_eq!(result, expected,
+            "Byte write to lane {} should only change that byte. initial={:#010x}, wrote {:#04x}, got {:#010x}, expected {:#010x}",
+            lane, initial, write_byte, result, expected);
+    }
+
+    /// Property: Byte read extracts the correct byte and zero-extends
+    #[test]
+    fn prop_byte_read_zero_extends(
+        word in data_value(),
+        lane in 0u8..4,
+    ) {
+        let runtime = create_runtime().unwrap();
+        let mut tta = runtime.create_model_simple::<TtaTestbench>().unwrap();
+        let mut helper = TtaPropertyHelper::new();
+
+        tta.rst_i = 1;
+        tta.clk_i = 0;
+        tta.instr_ready_i = 1;
+        tta.data_ready_i = 1;
+        tta.instr_data_read_i = 0;
+        tta.data_data_read_i = 0;
+
+        helper.set_data_memory(60, word);
+
+        let program = vec![
+            // Byte read from addr 60, selected lane
+            instr()
+                .src_mem_op(60, AccessWidth::Byte, lane)
+                .dst(Unit::UNIT_MEMORY_IMMEDIATE)
+                .di(100),
+        ];
+
+        let mut machine_code = Vec::new();
+        for instr in program {
+            machine_code.extend(instr.assemble());
+        }
+        helper.load_instructions(&machine_code, 0);
+        helper.run_until_reset_released(&mut tta).unwrap();
+        helper.run_for_cycles(&mut tta, 200);
+
+        let result = helper.get_data_memory(100);
+        let expected_byte = word.to_le_bytes()[lane as usize];
+
+        prop_assert_eq!(result, expected_byte as u32,
+            "Byte read from lane {} of {:#010x} should be {:#04x}, got {:#010x}",
+            lane, word, expected_byte, result);
+    }
+
+    /// Property: Halfword write only modifies the selected half
+    #[test]
+    fn prop_halfword_write_preserves_other_half(
+        initial in data_value(),
+        write_half in 0u16..=0xFFFF,
+        high_half in prop::bool::ANY,
+    ) {
+        let runtime = create_runtime().unwrap();
+        let mut tta = runtime.create_model_simple::<TtaTestbench>().unwrap();
+        let mut helper = TtaPropertyHelper::new();
+
+        tta.rst_i = 1;
+        tta.clk_i = 0;
+        tta.instr_ready_i = 1;
+        tta.data_ready_i = 1;
+        tta.instr_data_read_i = 0;
+        tta.data_data_read_i = 0;
+
+        helper.set_data_memory(70, initial);
+        let offset = if high_half { 2u8 } else { 0u8 };
+
+        let program = vec![
+            // Load halfword value into r0
+            instr()
+                .src(Unit::UNIT_ABS_OPERAND)
+                .soperand(write_half as u32)
+                .dst(Unit::UNIT_REGISTER)
+                .di(0),
+            // Halfword write
+            instr()
+                .src(Unit::UNIT_REGISTER)
+                .si(0)
+                .dst_mem_op(70, AccessWidth::HalfWord, offset),
+            // Read back full word
+            instr()
+                .src_mem_op(70, AccessWidth::Word, 0)
+                .dst(Unit::UNIT_MEMORY_IMMEDIATE)
+                .di(100),
+        ];
+
+        let mut machine_code = Vec::new();
+        for instr in program {
+            machine_code.extend(instr.assemble());
+        }
+        helper.load_instructions(&machine_code, 0);
+        helper.run_until_reset_released(&mut tta).unwrap();
+        helper.run_for_cycles(&mut tta, 200);
+
+        let result = helper.get_data_memory(100);
+        let expected = if high_half {
+            (initial & 0x0000FFFF) | ((write_half as u32) << 16)
+        } else {
+            (initial & 0xFFFF0000) | (write_half as u32)
+        };
+
+        prop_assert_eq!(result, expected,
+            "Halfword write (high={}) should preserve other half. initial={:#010x}, wrote {:#06x}",
+            high_half, initial, write_half);
+    }
+
+    // --- Conditional branch properties ---
+
+    /// Property: Unconditional jump always reaches the target
+    #[test]
+    fn prop_unconditional_jump_always_taken(
+        marker in 1u32..4095,
+    ) {
+        let runtime = create_runtime().unwrap();
+        let mut tta = runtime.create_model_simple::<TtaTestbench>().unwrap();
+        let mut helper = TtaPropertyHelper::new();
+
+        tta.rst_i = 1;
+        tta.clk_i = 0;
+        tta.instr_ready_i = 1;
+        tta.data_ready_i = 1;
+        tta.instr_data_read_i = 0;
+        tta.data_data_read_i = 0;
+
+        // addr 0: jump to addr 3 (skips addr 2)
+        // addr 2: store 0 to mem[100] (should be skipped)
+        // addr 3: store marker to mem[100]
+        let program = vec![
+            instr()
+                .src(Unit::UNIT_ABS_OPERAND)
+                .soperand(3)
+                .dst(Unit::UNIT_PC),
+            instr()
+                .src(Unit::UNIT_ABS_IMMEDIATE)
+                .si(0)
+                .dst(Unit::UNIT_MEMORY_IMMEDIATE)
+                .di(100),
+            instr()
+                .src(Unit::UNIT_ABS_OPERAND)
+                .soperand(marker)
+                .dst(Unit::UNIT_MEMORY_IMMEDIATE)
+                .di(100),
+        ];
+
+        let mut machine_code = Vec::new();
+        for instr in program {
+            machine_code.extend(instr.assemble());
+        }
+        helper.load_instructions(&machine_code, 0);
+        helper.run_until_reset_released(&mut tta).unwrap();
+        helper.run_for_cycles(&mut tta, 200);
+
+        let result = helper.get_data_memory(100);
+        prop_assert_eq!(result, marker,
+            "Jump should always skip over the zero-store instruction");
+    }
+
+    /// Property: Conditional branch is taken iff condition is nonzero
+    #[test]
+    fn prop_conditional_branch_correctness(
+        cond_value in 0u32..8,
+    ) {
+        let runtime = create_runtime().unwrap();
+        let mut tta = runtime.create_model_simple::<TtaTestbench>().unwrap();
+        let mut helper = TtaPropertyHelper::new();
+
+        tta.rst_i = 1;
+        tta.clk_i = 0;
+        tta.instr_ready_i = 1;
+        tta.data_ready_i = 1;
+        tta.instr_data_read_i = 0;
+        tta.data_data_read_i = 0;
+
+        // addr 0: set cond = cond_value
+        // addr 1-2: conditional jump to addr 4 (skip addr 3)
+        // addr 3: store 111 to mem[100] (only if NOT taken)
+        // addr 4: store 222 to mem[101] (always reached)
+        let program = vec![
+            instr()
+                .src(Unit::UNIT_ABS_IMMEDIATE)
+                .si(cond_value as u16)
+                .dst(Unit::UNIT_COND),
+            instr()
+                .src(Unit::UNIT_ABS_OPERAND)
+                .soperand(4)
+                .dst(Unit::UNIT_PC_COND),
+            instr()
+                .src(Unit::UNIT_ABS_IMMEDIATE)
+                .si(111)
+                .dst(Unit::UNIT_MEMORY_IMMEDIATE)
+                .di(100),
+            instr()
+                .src(Unit::UNIT_ABS_IMMEDIATE)
+                .si(222)
+                .dst(Unit::UNIT_MEMORY_IMMEDIATE)
+                .di(101),
+        ];
+
+        let mut machine_code = Vec::new();
+        for instr in program {
+            machine_code.extend(instr.assemble());
+        }
+        helper.load_instructions(&machine_code, 0);
+        helper.run_until_reset_released(&mut tta).unwrap();
+        helper.run_for_cycles(&mut tta, 200);
+
+        let mem100 = helper.get_data_memory(100);
+        let mem101 = helper.get_data_memory(101);
+
+        if cond_value != 0 {
+            // Branch taken — addr 3 should be skipped
+            prop_assert_eq!(mem100, 0,
+                "Branch taken (cond={}): skipped instruction should not have written mem[100]",
+                cond_value);
+        } else {
+            // Branch not taken — addr 3 should execute
+            prop_assert_eq!(mem100, 111,
+                "Branch not taken (cond=0): addr 3 should write 111 to mem[100]");
+        }
+        prop_assert_eq!(mem101, 222, "Addr 4 should always execute");
+    }
+
+    // --- Tagged register properties ---
+
+    /// Property: TAG read extracts only the low TAG_WIDTH bits
+    #[test]
+    fn prop_tag_read_extracts_low_bits(
+        value in data_value(),
+    ) {
+        let runtime = create_runtime().unwrap();
+        let mut tta = runtime.create_model_simple::<TtaTestbench>().unwrap();
+        let mut helper = TtaPropertyHelper::new();
+
+        tta.rst_i = 1;
+        tta.clk_i = 0;
+        tta.instr_ready_i = 1;
+        tta.data_ready_i = 1;
+        tta.instr_data_read_i = 0;
+        tta.data_data_read_i = 0;
+
+        let program = vec![
+            // Load arbitrary value into r0
+            instr()
+                .src(Unit::UNIT_ABS_OPERAND)
+                .soperand(value)
+                .dst(Unit::UNIT_REGISTER)
+                .di(0),
+            // Read TAG → mem[100]
+            instr()
+                .src_reg(0, RegMode::Tag)
+                .dst(Unit::UNIT_MEMORY_IMMEDIATE)
+                .di(100),
+        ];
+
+        let mut machine_code = Vec::new();
+        for instr in program {
+            machine_code.extend(instr.assemble());
+        }
+        helper.load_instructions(&machine_code, 0);
+        helper.run_until_reset_released(&mut tta).unwrap();
+        helper.run_for_cycles(&mut tta, 200);
+
+        let tag = helper.get_data_memory(100);
+        prop_assert_eq!(tag, value & 0x3,
+            "TAG read of {:#010x} should be {}, got {}", value, value & 0x3, tag);
+    }
+
+    /// Property: VALUE read zeros the tag bits
+    #[test]
+    fn prop_value_read_zeros_tag(
+        value in data_value(),
+    ) {
+        let runtime = create_runtime().unwrap();
+        let mut tta = runtime.create_model_simple::<TtaTestbench>().unwrap();
+        let mut helper = TtaPropertyHelper::new();
+
+        tta.rst_i = 1;
+        tta.clk_i = 0;
+        tta.instr_ready_i = 1;
+        tta.data_ready_i = 1;
+        tta.instr_data_read_i = 0;
+        tta.data_data_read_i = 0;
+
+        let program = vec![
+            instr()
+                .src(Unit::UNIT_ABS_OPERAND)
+                .soperand(value)
+                .dst(Unit::UNIT_REGISTER)
+                .di(0),
+            instr()
+                .src_reg(0, RegMode::Value)
+                .dst(Unit::UNIT_MEMORY_IMMEDIATE)
+                .di(100),
+        ];
+
+        let mut machine_code = Vec::new();
+        for instr in program {
+            machine_code.extend(instr.assemble());
+        }
+        helper.load_instructions(&machine_code, 0);
+        helper.run_until_reset_released(&mut tta).unwrap();
+        helper.run_for_cycles(&mut tta, 200);
+
+        let result = helper.get_data_memory(100);
+        prop_assert_eq!(result, value & !0x3,
+            "VALUE read of {:#010x} should be {:#010x}, got {:#010x}",
+            value, value & !0x3, result);
+    }
+
+    /// Property: RAW = VALUE | TAG (value and tag together reconstruct the original)
+    #[test]
+    fn prop_raw_equals_value_or_tag(
+        value in data_value(),
+    ) {
+        let runtime = create_runtime().unwrap();
+        let mut tta = runtime.create_model_simple::<TtaTestbench>().unwrap();
+        let mut helper = TtaPropertyHelper::new();
+
+        tta.rst_i = 1;
+        tta.clk_i = 0;
+        tta.instr_ready_i = 1;
+        tta.data_ready_i = 1;
+        tta.instr_data_read_i = 0;
+        tta.data_data_read_i = 0;
+
+        let program = vec![
+            instr()
+                .src(Unit::UNIT_ABS_OPERAND)
+                .soperand(value)
+                .dst(Unit::UNIT_REGISTER)
+                .di(0),
+            // Read all three modes
+            instr()
+                .src_reg(0, RegMode::Raw)
+                .dst(Unit::UNIT_MEMORY_IMMEDIATE)
+                .di(100),
+            instr()
+                .src_reg(0, RegMode::Value)
+                .dst(Unit::UNIT_MEMORY_IMMEDIATE)
+                .di(101),
+            instr()
+                .src_reg(0, RegMode::Tag)
+                .dst(Unit::UNIT_MEMORY_IMMEDIATE)
+                .di(102),
+        ];
+
+        let mut machine_code = Vec::new();
+        for instr in program {
+            machine_code.extend(instr.assemble());
+        }
+        helper.load_instructions(&machine_code, 0);
+        helper.run_until_reset_released(&mut tta).unwrap();
+        helper.run_for_cycles(&mut tta, 200);
+
+        let raw = helper.get_data_memory(100);
+        let val = helper.get_data_memory(101);
+        let tag = helper.get_data_memory(102);
+
+        prop_assert_eq!(raw, value, "RAW should be the original value");
+        prop_assert_eq!(val | tag, raw, "VALUE | TAG should reconstruct RAW");
+    }
+
+    /// Property: TAG write preserves payload, VALUE write preserves tag
+    #[test]
+    fn prop_tag_value_write_independence(
+        initial in data_value(),
+        new_tag in 0u32..4,
+        new_payload in data_value(),
+    ) {
+        let runtime = create_runtime().unwrap();
+        let mut tta = runtime.create_model_simple::<TtaTestbench>().unwrap();
+        let mut helper = TtaPropertyHelper::new();
+
+        tta.rst_i = 1;
+        tta.clk_i = 0;
+        tta.instr_ready_i = 1;
+        tta.data_ready_i = 1;
+        tta.instr_data_read_i = 0;
+        tta.data_data_read_i = 0;
+
+        let program = vec![
+            // Load initial value into r0
+            instr()
+                .src(Unit::UNIT_ABS_OPERAND)
+                .soperand(initial)
+                .dst(Unit::UNIT_REGISTER)
+                .di(0),
+            // Write new tag (preserves payload)
+            instr()
+                .src(Unit::UNIT_ABS_IMMEDIATE)
+                .si(new_tag as u16)
+                .dst_reg(0, RegMode::Tag),
+            // Read raw after TAG write → mem[100]
+            instr()
+                .src_reg(0, RegMode::Raw)
+                .dst(Unit::UNIT_MEMORY_IMMEDIATE)
+                .di(100),
+            // Now write new payload (preserves tag)
+            instr()
+                .src(Unit::UNIT_ABS_OPERAND)
+                .soperand(new_payload)
+                .dst_reg(0, RegMode::Value),
+            // Read raw after VALUE write → mem[101]
+            instr()
+                .src_reg(0, RegMode::Raw)
+                .dst(Unit::UNIT_MEMORY_IMMEDIATE)
+                .di(101),
+        ];
+
+        let mut machine_code = Vec::new();
+        for instr in program {
+            machine_code.extend(instr.assemble());
+        }
+        helper.load_instructions(&machine_code, 0);
+        helper.run_until_reset_released(&mut tta).unwrap();
+        helper.run_for_cycles(&mut tta, 200);
+
+        let after_tag_write = helper.get_data_memory(100);
+        let after_value_write = helper.get_data_memory(101);
+
+        // After TAG write: payload from initial, tag is new_tag
+        let expected_after_tag = (initial & !0x3) | (new_tag & 0x3);
+        prop_assert_eq!(after_tag_write, expected_after_tag,
+            "TAG write should preserve payload. initial={:#010x}, new_tag={}", initial, new_tag);
+
+        // After VALUE write: payload from new_payload, tag from previous (new_tag)
+        let expected_after_value = (new_payload & !0x3) | (new_tag & 0x3);
+        prop_assert_eq!(after_value_write, expected_after_value,
+            "VALUE write should preserve tag. new_payload={:#010x}, tag should be {}", new_payload, new_tag);
+    }
+
+    /// Property: DEREF reads from (reg & ~TAG_MASK) + offset
+    #[test]
+    fn prop_deref_reads_at_untagged_address(
+        base_addr in 4u32..200,
+        tag in 0u32..4,
+        offset in 0u8..4,
+        stored_value in data_value(),
+    ) {
+        // Ensure base address is tag-aligned (low bits must be 0 for tag to work)
+        let aligned_addr = base_addr & !0x3;
+        if aligned_addr == 0 { return Ok(()); } // skip addr 0
+
+        let runtime = create_runtime().unwrap();
+        let mut tta = runtime.create_model_simple::<TtaTestbench>().unwrap();
+        let mut helper = TtaPropertyHelper::new();
+
+        tta.rst_i = 1;
+        tta.clk_i = 0;
+        tta.instr_ready_i = 1;
+        tta.data_ready_i = 1;
+        tta.instr_data_read_i = 0;
+        tta.data_data_read_i = 0;
+
+        // Pre-fill memory at the target address
+        helper.set_data_memory(aligned_addr + offset as u32, stored_value);
+
+        let tagged_ptr = aligned_addr | tag;
+
+        let program = vec![
+            // Load tagged pointer into r0
+            instr()
+                .src(Unit::UNIT_ABS_OPERAND)
+                .soperand(tagged_ptr)
+                .dst(Unit::UNIT_REGISTER)
+                .di(0),
+            // DEREF with offset
+            instr()
+                .src_deref(0, offset)
+                .dst(Unit::UNIT_MEMORY_IMMEDIATE)
+                .di(500),
+        ];
+
+        let mut machine_code = Vec::new();
+        for instr in program {
+            machine_code.extend(instr.assemble());
+        }
+        helper.load_instructions(&machine_code, 0);
+        helper.run_until_reset_released(&mut tta).unwrap();
+        helper.run_for_cycles(&mut tta, 200);
+
+        let result = helper.get_data_memory(500);
+        prop_assert_eq!(result, stored_value,
+            "DEREF of tagged_ptr={:#010x} (addr={}, tag={}) + offset={} should read value at addr {}",
+            tagged_ptr, aligned_addr, tag, offset, aligned_addr + offset as u32);
+    }
+
     }
 }
