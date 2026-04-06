@@ -91,9 +91,11 @@ module cmod_a35t_top (
       .data_read_data_i(sram_data_i),
       .mailbox_data_i({DATA_WIDTH{1'b0}}),
       .mailbox_valid_i(1'b0),
+      /* verilator lint_off PINCONNECTEMPTY */
       .mailbox_ack_o(),
       .mailbox_out_o(),
       .mailbox_out_valid_o()
+      /* verilator lint_on PINCONNECTEMPTY */
   );
 
 endmodule
