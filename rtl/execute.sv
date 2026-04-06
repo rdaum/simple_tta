@@ -298,15 +298,12 @@ module execute (
             // Source is memory-backed, so begin a bus read.
             // Width (imm[11:10]) and byte offset (imm[9:8]) are applied
             // when the data returns in EXEC_SRC_MEM_RETRIEVE. These fields
-            // are only active for MEMORY_OPERAND and REGISTER_POINTER;
-            // MEMORY_IMMEDIATE always does a full-word read.
-            UNIT_MEMORY_OPERAND, UNIT_MEMORY_IMMEDIATE, UNIT_REGISTER_POINTER: begin
+            // are only active for MEMORY_OPERAND; MEMORY_IMMEDIATE always
+            // does a full-word read. For register-indirect, use DEREF mode.
+            UNIT_MEMORY_OPERAND, UNIT_MEMORY_IMMEDIATE: begin
               case (src_unit_i)
                 UNIT_MEMORY_OPERAND: data_addr_o <= src_operand_i;
                 UNIT_MEMORY_IMMEDIATE: data_addr_o <= {20'b0, src_immediate_i};
-                UNIT_REGISTER_POINTER: begin
-                  data_addr_o <= reg_raw_data[src_immediate_i[4:0]];
-                end
                 default: data_addr_o <= 32'b0;
               endcase
               data_valid_o <= 1'b1;
@@ -570,13 +567,10 @@ module execute (
               done_o <= 1'b1;
               exec_state <= EXEC_START_SRC;
             end
-            UNIT_MEMORY_OPERAND, UNIT_MEMORY_IMMEDIATE, UNIT_REGISTER_POINTER: begin
+            UNIT_MEMORY_OPERAND, UNIT_MEMORY_IMMEDIATE: begin
               case (dst_unit_i)
                 UNIT_MEMORY_OPERAND: data_addr_o <= dst_operand_i;
                 UNIT_MEMORY_IMMEDIATE: data_addr_o <= {20'b0, dst_immediate_i};
-                UNIT_REGISTER_POINTER: begin
-                  data_addr_o <= reg_raw_data[dst_immediate_i[4:0]];
-                end
                 default: data_addr_o <= 32'b0;
               endcase
 

@@ -314,26 +314,24 @@ mod tests {
         tta.instr_data_read_i = 0;
         tta.data_data_read_i = 0;
 
-        // Load program equivalent to C++ test:
-        // 1. Store 666 to memory[123]
-        // 2. Store 123 to register[1] (pointer)
-        // 3. Load from register[1] pointer to memory[124]
+        // 1. Store 666 to memory[124] (tag-aligned address)
+        // 2. Store 124 to register[1] (pointer, tag bits = 0)
+        // 3. Load from register[1] via DEREF to memory[200]
         let program = vec![
             instr()
                 .src(Unit::UNIT_ABS_IMMEDIATE)
                 .si(666)
                 .dst(Unit::UNIT_MEMORY_IMMEDIATE)
-                .di(123),
+                .di(124),
             instr()
                 .src(Unit::UNIT_ABS_IMMEDIATE)
-                .si(123)
+                .si(124)
                 .dst(Unit::UNIT_REGISTER)
                 .di(1),
             instr()
-                .src(Unit::UNIT_REGISTER_POINTER)
-                .si(1)
+                .src_deref(1, 0)
                 .dst(Unit::UNIT_MEMORY_IMMEDIATE)
-                .di(124),
+                .di(200),
         ];
 
         let mut machine_code = Vec::new();
@@ -348,7 +346,7 @@ mod tests {
         helper.run_for_cycles(&mut tta, 100);
 
         // Verify the result
-        assert_eq!(helper.get_data_memory(124), 666);
+        assert_eq!(helper.get_data_memory(200), 666);
         Ok(())
     }
 
@@ -1693,20 +1691,19 @@ mod tests {
         tta.instr_data_read_i = 0;
         tta.data_data_read_i = 0;
 
-        // Pre-fill memory word at address 42 with 0x44332211
-        helper.set_data_memory(42, 0x44332211);
+        // Pre-fill memory word at address 44 (tag-aligned) with 0x44332211
+        helper.set_data_memory(44, 0x44332211);
 
-        // Load address 42 into register 0, then read byte 2 via register pointer
+        // Load address 44 into register 0, then read word via DEREF
         let program = vec![
-            // Load address 42 into register 0
             instr()
                 .src(Unit::UNIT_ABS_IMMEDIATE)
-                .si(42)
+                .si(44)
                 .dst(Unit::UNIT_REGISTER)
                 .di(0),
-            // Read byte at offset 2 from address in register 0
+            // Read word from address in register 0 via DEREF
             instr()
-                .src_reg_ptr(0, AccessWidth::Byte, 2)
+                .src_deref(0, 0)
                 .dst(Unit::UNIT_REGISTER)
                 .di(1),
             // Store to memory for verification
@@ -1728,8 +1725,8 @@ mod tests {
         let result = helper.get_data_memory(100);
 
         assert_eq!(
-            result, 0x33,
-            "Byte at offset 2 of 0x44332211 should be 0x33"
+            result, 0x44332211,
+            "Word read via DEREF from address 44 should return 0x44332211"
         );
 
         Ok(())

@@ -39,7 +39,7 @@ pub enum Unit {
     UNIT_PC = 10,
     UNIT_ABS_IMMEDIATE = 11,
     UNIT_ABS_OPERAND = 12,
-    UNIT_REGISTER_POINTER = 13,
+    // 13 is reserved (was REGISTER_POINTER, use REGISTER DEREF mode instead)
     UNIT_COND = 14,
     UNIT_PC_COND = 15,
 }
@@ -337,22 +337,17 @@ impl Instr {
         self
     }
 
-    /// Set the source to a register-pointer load with the given access width
-    /// and byte offset within the word.
-    pub fn src_reg_ptr(mut self, reg: u16, width: AccessWidth, byte_offset: u8) -> Self {
-        assert!(reg < 32, "Register index must be 0-31");
-        self.src_unit = Unit::UNIT_REGISTER_POINTER;
-        self.si = encode_mem_immediate(reg, width, byte_offset);
-        self
+    /// Set the source to a register-pointer load (word access).
+    /// Uses REGISTER DEREF mode. For sub-word access, load the address
+    /// into a register first and use MEMORY_OPERAND.
+    pub fn src_reg_ptr(self, reg: u16, _width: AccessWidth, _byte_offset: u8) -> Self {
+        self.src_deref(reg, 0)
     }
 
-    /// Set the destination to a register-pointer store with the given access
-    /// width and byte offset within the word.
-    pub fn dst_reg_ptr(mut self, reg: u16, width: AccessWidth, byte_offset: u8) -> Self {
-        assert!(reg < 32, "Register index must be 0-31");
-        self.dst_unit = Unit::UNIT_REGISTER_POINTER;
-        self.di = encode_mem_immediate(reg, width, byte_offset);
-        self
+    /// Set the destination to a register-pointer store (word access).
+    /// Uses REGISTER DEREF mode.
+    pub fn dst_reg_ptr(self, reg: u16, _width: AccessWidth, _byte_offset: u8) -> Self {
+        self.dst_deref(reg, 0)
     }
 
     // --- Tagged register access helpers ---

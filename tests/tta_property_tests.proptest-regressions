@@ -5,3 +5,4 @@
 # It is recommended to check this file in to source control so that
 # everyone who runs the test benefits from these saved cases.
 cc 9e5c821b704ca4d1e4fe7c01540585344dc43c4a829935cc326ff5db0e6de4ee # shrinks to value = 0, op = 10
+cc 2844522cafe6731502429fb10cf4f5194e76c8a38e55729795279e8c55eb360a # shrinks to a = 32, b = 0, op_idx = 1
