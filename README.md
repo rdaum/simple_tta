@@ -1,28 +1,51 @@
 ## What is this?
 
-A very simple 32-bit processor written in Verilog with a kind of
-[Transport Triggered
-Architecture](https://en.wikipedia.org/wiki/Transport_triggered_architecture).
+A 32-bit soft processor core with a [Transport Triggered
+Architecture](https://en.wikipedia.org/wiki/Transport_triggered_architecture),
+written in synthesizable Verilog. It targets FPGAs as a
+programmable coprocessor for language runtimes, with native
+support for tagged values, hardware stacks, and GC write barriers.
 
 ### What's it for?
 
-I built it just to play with the concept, learn some HDL stuff, and to
-potentially use it as the basis for domain specific coprocessors for
-other hobby projects of mine. In particular I'd like to use it for
-support for language interpreters for other hobby FPGA projects.
+It started as a learning project, but has grown into something
+that could maybe be useful as a small, predictable compute core
+for running interpreters or JIT-compiled bytecode on an FPGA.
+
+My idea was to permit the deployment of Lua, Lisp, or WebAssembly on a soft core that fits in a few thousand gates, with
+hardware support for the primitives those runtimes need (tagged pointers, type dispatch, cons cell access, garbage
+collection barriers).
+
+The accompanying Rust tooling includes an assembler and a dataflow graph
+compiler that handles ALU lane scheduling and label resolution,
+making it practical to generate TTA programs from higher-level
+representations.
 
 ### What can it do?
 
-It has 32 32-bit registers, a 32-bit program counter, separate
-program and data buses, 8 independent integer ALU lanes, and 8
-hardware stacks (64 words each). All memory is word-addressed (each
-address = one 32-bit word).
+**Hardware resources:** 32 tagged registers, 8 independent
+integer ALU lanes, 8 hardware stacks (64 words each), a 32-entry
+GC write barrier FIFO, separate instruction and data buses, a
+2-entry instruction queue with prefetch, and a condition register
+for branching. All memory is word-addressed.
 
-Unlike a conventional processor there is really only one kind of
-instruction: *move a value from a source unit to a destination unit*.
-Computation is a side effect of routing data through functional units.
-It is the responsibility of the program author to be aware of which
-ALUs, etc. are currently in use and schedule accordingly.
+**Programming model:** there is really only one kind of
+instruction: *move a value from a source unit to a destination
+unit*. Computation is a side effect of routing data through
+functional units. The programmer (or compiler) explicitly
+schedules operations across ALU lanes — there is no hardware
+hazard detection or out-of-order execution.
+
+**Tagged values:** registers and stacks natively support tagged
+values (2-bit low tags by default). A single-move DEREF mode
+strips the tag, adds an offset, and loads from memory — enabling
+`(car x)` in one instruction. Type dispatch is two instructions
+(peek tag → branch).
+
+**Synthesizable:** the design passes Yosys synthesis and
+Verilator lint with zero warnings. All sequential logic uses
+non-blocking assignments. CI runs tests, lint, and synthesis on
+every push.
 
 ### Instruction encoding
 
@@ -67,8 +90,9 @@ destination require an extended operand.
 | `STACK_PUSH_POP`   | Pop from stack N (mode-aware)           | Push to stack N                        |
 | `STACK_INDEX`      | Peek at offset in stack N (mode-aware)  | Poke at offset in stack N              |
 
-All 16 unit codes are assigned. The assembler in `src/assembler.rs`
-is the authoritative reference for encoding details.
+All 16 unit codes are assigned. The assembler in
+`crates/tta-asm/src/assembler.rs` is the authoritative reference
+for encoding details.
 
 ### ALU operations
 
@@ -203,6 +227,40 @@ logic in the existing data path.
 `MEMORY_IMMEDIATE` always performs full-word access (the full
 12-bit immediate is used as a word address).
 
+### Dataflow compiler
+
+The `tta-asm` crate includes a dataflow graph compiler
+(`crates/tta-asm/src/dataflow.rs`) for programmatic code
+generation. Build a graph of operations with data dependencies,
+and the compiler emits scheduled TTA move sequences:
+
+```rust
+let mut g = Graph::new();
+let a = g.constant(42);
+let b = g.constant(10);
+let sum = g.add(a, b);
+g.store_mem(100, sum);
+let moves = g.compile();  // → Vec<Instr>
+```
+
+**Interleaving scheduler.** Independent ALU operations are
+batched and their setup moves interleaved across lanes — all
+left operands first, then all rights, then all operators. This
+maximizes the benefit of 8 ALU lanes without manual scheduling.
+
+**Labels.** Branch targets use `label()` / `place_label()` /
+`branch_cond_label()` with automatic address resolution after
+instruction layout:
+
+```rust
+let skip = g.label();
+g.set_cond(cmp);
+g.branch_cond_label(skip);
+// ... else path ...
+g.place_label(skip);
+// ... then path ...
+```
+
 ### Microarchitecture
 
 The core has three stages: **sequencer** (fetch), **decoder**
@@ -248,10 +306,13 @@ further).
 assignments (`<=`). The design is correct for FPGA synthesis, not
 just Verilator simulation.
 
-### What can't it do yet?
+### What's next?
 
-* I'd like to add support for interrupts.
-* Who knows? I aim for exotic fun.
+* Interrupts
+* 1-cycle fused pipeline (forwarding infrastructure is in place,
+  activation blocked on one edge case)
+* Lua bytecode interpreter or JIT as a proof-of-concept runtime
+* Wider instruction bus / instruction cache for real FPGA memory
 
 ### Cycle counts
 
@@ -279,19 +340,32 @@ Memory and stack operations pay extra for bus or stack handshakes.
 With the 2-entry instruction queue, the fetch cost is fully hidden
 for sequential code; branches stall the fetch until resolved.
 
+### Project structure
+
+The Rust code is a Cargo workspace with two crates:
+
+* **`crates/tta-asm`** — assembler and dataflow compiler. Pure
+  Rust, no simulator dependencies. Use this to generate TTA
+  programs without a hardware simulator.
+* **`crates/tta-sim`** — Verilator/Marlin simulator runtime, CLI,
+  and all tests. Depends on `tta-asm` and re-exports its types.
+
+HDL sources live in `rtl/`, with top-level simulation wrappers
+`tta_tb.sv` and `simtop.sv` at the repo root.
+
 ### Building, running
 
-The project uses Rust with the Marlin library for simulation:
-
-* `cargo test` runs the full test suite (100+ tests: integration,
-  property-based, and unit tests)
-* `cargo run -- --cycles 200` runs the Marlin-backed `simtop`
-  wrapper with boot ROM and external SRAM modeling
-* `cargo run -- --trace-file simtop.vcd` writes a VCD trace for
-  debugging
+* `cargo test` runs the full test suite (113 tests: unit,
+  integration, and property-based)
+* `cargo run -p tta-sim -- --cycles 200` runs the Marlin-backed
+  `simtop` wrapper with boot ROM and external SRAM modeling
+* `cargo run -p tta-sim -- --trace-file simtop.vcd` writes a VCD
+  trace for debugging
 * A simple fusesoc core file is present for FPGA synthesis
 
 ### But this sucks, because <XXXX>?
 
 * Well I'm not as smart as you! This is a toy.
 * But ... Contributions welcome.
+* Run `cargo test` and `verilator --lint-only -Wall` before
+  submitting.
