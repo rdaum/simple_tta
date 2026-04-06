@@ -114,6 +114,18 @@ impl TtaTestHelper {
         self.data_memory.insert(addr, value);
     }
 
+    /// Step until instr_done_o pulses high, returning the number of cycles taken.
+    /// Returns None if max_cycles is reached without done.
+    fn run_until_done<'a>(&mut self, tta: &mut TtaTestbench<'a>, max_cycles: u32) -> Option<u32> {
+        for i in 0..max_cycles {
+            self.step(tta);
+            if tta.instr_done_o != 0 {
+                return Some(i + 1);
+            }
+        }
+        None
+    }
+
     /// Get data memory value
     fn get_data_memory(&self, addr: u32) -> u32 {
         *self.data_memory.get(&addr).unwrap_or(&0)
@@ -2267,6 +2279,192 @@ mod tests {
 
         assert_eq!(car, 777, "DEREF write at offset 0 should store 777 at word addr 24");
         assert_eq!(cdr, 888, "DEREF write at offset 1 should store 888 at word addr 25");
+
+        Ok(())
+    }
+
+    // --- Cycle-precise prefetch tests ---
+
+    #[test]
+    fn test_prefetch_hides_fetch_latency() -> Result<(), Box<dyn std::error::Error>> {
+        // Two back-to-back 1-word register moves. The second instruction
+        // should be prefetched while the first executes, so the second
+        // done should arrive faster than the first (no fetch stall).
+        let runtime = create_runtime()?;
+        let mut tta = runtime
+            .create_model_simple::<TtaTestbench>()
+            .map_err(|e| format!("Failed to create model: {:?}", e))?;
+        let mut helper = TtaTestHelper::new();
+
+        tta.rst_i = 1;
+        tta.clk_i = 0;
+        tta.instr_ready_i = 0;
+        tta.data_ready_i = 0;
+        tta.instr_data_read_i = 0;
+        tta.data_data_read_i = 0;
+
+        let program = vec![
+            // addr 0: imm 42 → reg 0
+            instr()
+                .src(Unit::UNIT_ABS_IMMEDIATE).si(42)
+                .dst(Unit::UNIT_REGISTER).di(0),
+            // addr 1: imm 99 → reg 1
+            instr()
+                .src(Unit::UNIT_ABS_IMMEDIATE).si(99)
+                .dst(Unit::UNIT_REGISTER).di(1),
+            // addr 2: reg 0 → mem[100]
+            instr()
+                .src(Unit::UNIT_REGISTER).si(0)
+                .dst(Unit::UNIT_MEMORY_IMMEDIATE).di(100),
+        ];
+
+        let mut machine_code = Vec::new();
+        for i in &program {
+            machine_code.extend(i.assemble());
+        }
+        helper.load_instructions(&machine_code, 0);
+        helper.run_until_reset_released(&mut tta)?;
+
+        // First instruction: cold start, no prefetch benefit.
+        let cycles_1 = helper.run_until_done(&mut tta, 50)
+            .expect("First instruction should complete");
+        // Second instruction: should have been prefetched during first.
+        let cycles_2 = helper.run_until_done(&mut tta, 50)
+            .expect("Second instruction should complete");
+
+        // The second instruction should complete in fewer cycles than
+        // the first, because the fetch was overlapped with execute.
+        // (We don't assert exact counts since they depend on bus timing,
+        // but the second should not be slower than the first.)
+        assert!(cycles_2 <= cycles_1,
+            "Prefetched instruction should not take more cycles than the first \
+             (first={}, second={})", cycles_1, cycles_2);
+
+        // Verify correctness
+        helper.run_for_cycles(&mut tta, 50);
+        assert_eq!(helper.get_data_memory(100), 42);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_prefetch_survives_multicycle_execute() -> Result<(), Box<dyn std::error::Error>> {
+        // First instruction is a memory load (multi-cycle execute).
+        // Second instruction should be prefetched and waiting in the
+        // sequencer's buffer while execute waits for data_bus.ready.
+        // After the load completes, the second instruction should
+        // execute without an additional fetch stall.
+        let runtime = create_runtime()?;
+        let mut tta = runtime
+            .create_model_simple::<TtaTestbench>()
+            .map_err(|e| format!("Failed to create model: {:?}", e))?;
+        let mut helper = TtaTestHelper::new();
+
+        tta.rst_i = 1;
+        tta.clk_i = 0;
+        tta.instr_ready_i = 0;
+        tta.data_ready_i = 0;
+        tta.instr_data_read_i = 0;
+        tta.data_data_read_i = 0;
+
+        helper.set_data_memory(50, 0xCAFE);
+
+        let program = vec![
+            // addr 0: mem[50] → reg[0] (multi-cycle: data bus read)
+            instr()
+                .src(Unit::UNIT_MEMORY_IMMEDIATE).si(50)
+                .dst(Unit::UNIT_REGISTER).di(0),
+            // addr 1: imm 0x42 → reg[1] (single-cycle, should be prefetched)
+            instr()
+                .src(Unit::UNIT_ABS_IMMEDIATE).si(0x42)
+                .dst(Unit::UNIT_REGISTER).di(1),
+            // addr 2: reg[0] → mem[200]
+            instr()
+                .src(Unit::UNIT_REGISTER).si(0)
+                .dst(Unit::UNIT_MEMORY_IMMEDIATE).di(200),
+            // addr 3: reg[1] → mem[201]
+            instr()
+                .src(Unit::UNIT_REGISTER).si(1)
+                .dst(Unit::UNIT_MEMORY_IMMEDIATE).di(201),
+        ];
+
+        let mut machine_code = Vec::new();
+        for i in &program {
+            machine_code.extend(i.assemble());
+        }
+        helper.load_instructions(&machine_code, 0);
+        helper.run_until_reset_released(&mut tta)?;
+
+        // First instruction (memory load) — multi-cycle.
+        let cycles_load = helper.run_until_done(&mut tta, 50)
+            .expect("Memory load should complete");
+        // Second instruction (immediate → register) — should be prefetched.
+        let cycles_imm = helper.run_until_done(&mut tta, 50)
+            .expect("Immediate store should complete");
+
+        // The immediate-to-register move after a multi-cycle load should
+        // be fast (prefetched), not slower than the load itself.
+        assert!(cycles_imm <= cycles_load,
+            "Prefetched instruction after multi-cycle load should be fast \
+             (load={} cycles, imm={} cycles)", cycles_load, cycles_imm);
+
+        // Run remaining instructions and verify.
+        helper.run_for_cycles(&mut tta, 100);
+        assert_eq!(helper.get_data_memory(200), 0xCAFE, "Memory load result");
+        assert_eq!(helper.get_data_memory(201), 0x42, "Prefetched immediate result");
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_branch_flush_clears_prefetch() -> Result<(), Box<dyn std::error::Error>> {
+        // An unconditional jump should flush any prefetched instruction.
+        // The instruction immediately after the jump (which may have been
+        // prefetched) must NOT execute.
+        let runtime = create_runtime()?;
+        let mut tta = runtime
+            .create_model_simple::<TtaTestbench>()
+            .map_err(|e| format!("Failed to create model: {:?}", e))?;
+        let mut helper = TtaTestHelper::new();
+
+        tta.rst_i = 1;
+        tta.clk_i = 0;
+        tta.instr_ready_i = 0;
+        tta.data_ready_i = 0;
+        tta.instr_data_read_i = 0;
+        tta.data_data_read_i = 0;
+
+        // The jump is a 2-word instruction. While execute processes it,
+        // the sequencer may prefetch addr 2 (the wrong-path instruction).
+        // The branch must discard that prefetch.
+        //
+        // addr 0-1: jump to addr 3
+        // addr 2:   store 0xBAD → mem[400] (wrong path — distinct address)
+        // addr 3:   store 0x600D → mem[100] (branch target)
+        let program = vec![
+            instr()
+                .src(Unit::UNIT_ABS_OPERAND).soperand(3)
+                .dst(Unit::UNIT_PC),
+            instr()
+                .src(Unit::UNIT_ABS_IMMEDIATE).si(0xBAD)
+                .dst(Unit::UNIT_MEMORY_IMMEDIATE).di(400),
+            instr()
+                .src(Unit::UNIT_ABS_OPERAND).soperand(0x600D)
+                .dst(Unit::UNIT_MEMORY_IMMEDIATE).di(100),
+        ];
+
+        let mut machine_code = Vec::new();
+        for i in &program {
+            machine_code.extend(i.assemble());
+        }
+        helper.load_instructions(&machine_code, 0);
+        helper.run_until_reset_released(&mut tta)?;
+        helper.run_for_cycles(&mut tta, 100);
+
+        assert_eq!(helper.get_data_memory(100), 0x600D,
+            "Branch target should execute");
+        assert_eq!(helper.get_data_memory(400), 0,
+            "Wrong-path instruction must not execute (prefetch should be flushed)");
 
         Ok(())
     }

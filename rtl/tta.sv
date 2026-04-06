@@ -18,6 +18,11 @@ module tta (
     bus_if.master data_bus      // Data load/store bus
 );
 
+  // pc is the sequencer's next-fetch address. Execute reads it as pc_i
+  // for UNIT_PC, so a PC read returns the address of the word immediately
+  // AFTER the current instruction (i.e., instruction_addr + word_count).
+  // With prefetch, pc may have advanced further if the next instruction's
+  // fetch has started, but handoff latches the correct value.
   logic [31:0] pc;
   logic [31:0] src_operand;
   logic [31:0] dst_operand;

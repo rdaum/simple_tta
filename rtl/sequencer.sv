@@ -28,7 +28,10 @@ module sequencer (
     input wire clk_i,                   // System clock
     input wire rst_i,                   // Synchronous reset (active high)
     bus_if.master instr_bus,            // Instruction fetch bus
-    output logic [31:0] pc_o,           // Current program counter (word address)
+    output logic [31:0] pc_o,           // Next fetch address (word-addressed). Advances
+                                        // past all instruction words before handoff, so
+                                        // when execute reads it via UNIT_PC, it sees
+                                        // (instruction_address + instruction_word_count).
     output logic [31:0] op_o,           // Fetched opcode word for the decoder
     output logic [31:0] src_operand_o,  // 32-bit source operand (when needed)
     output logic [31:0] dst_operand_o,  // 32-bit destination operand (when needed)
@@ -40,6 +43,13 @@ module sequencer (
     // PC override from execute (for jumps / conditional branches).
     input  logic [31:0] pc_write_i,     // New PC value
     input  logic        pc_write_en_i   // High to override PC with pc_write_i
+
+`ifdef SEQUENCER_DEBUG
+    // Simulation-only debug outputs for observing prefetch state.
+    ,output wire        dbg_prefetch_valid_o,
+    output wire  [2:0]  dbg_fetch_state_o,
+    output wire  [31:0] dbg_prefetch_op_o
+`endif
 );
 
   // --- Fetch FSM state ---
@@ -60,6 +70,12 @@ module sequencer (
 
   // Valid is a level signal: high when buffer holds a complete instruction.
   assign instr_valid_o = prefetch_valid;
+
+`ifdef SEQUENCER_DEBUG
+  assign dbg_prefetch_valid_o = prefetch_valid;
+  assign dbg_fetch_state_o = fetch_state[2:0];
+  assign dbg_prefetch_op_o = prefetch_op;
+`endif
 
   // --- Helpers ---
   function automatic logic needs_src_op(logic [31:0] raw_op);
