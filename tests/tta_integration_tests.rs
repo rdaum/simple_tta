@@ -2468,4 +2468,195 @@ mod tests {
 
         Ok(())
     }
+
+    // --- Instruction queue tests ---
+
+    #[test]
+    fn test_queue_fills_across_consecutive_1word() -> Result<(), Box<dyn std::error::Error>> {
+        // Four consecutive 1-word instructions. The 2-entry queue should
+        // allow the first two to be fetched while none have executed yet.
+        // All four should produce correct results.
+        let runtime = create_runtime()?;
+        let mut tta = runtime
+            .create_model_simple::<TtaTestbench>()
+            .map_err(|e| format!("Failed to create model: {:?}", e))?;
+        let mut helper = TtaTestHelper::new();
+
+        tta.rst_i = 1;
+        tta.clk_i = 0;
+        tta.instr_ready_i = 0;
+        tta.data_ready_i = 0;
+        tta.instr_data_read_i = 0;
+        tta.data_data_read_i = 0;
+
+        let program = vec![
+            instr().src(Unit::UNIT_ABS_IMMEDIATE).si(11).dst(Unit::UNIT_MEMORY_IMMEDIATE).di(100),
+            instr().src(Unit::UNIT_ABS_IMMEDIATE).si(22).dst(Unit::UNIT_MEMORY_IMMEDIATE).di(101),
+            instr().src(Unit::UNIT_ABS_IMMEDIATE).si(33).dst(Unit::UNIT_MEMORY_IMMEDIATE).di(102),
+            instr().src(Unit::UNIT_ABS_IMMEDIATE).si(44).dst(Unit::UNIT_MEMORY_IMMEDIATE).di(103),
+        ];
+
+        let mut machine_code = Vec::new();
+        for i in &program {
+            machine_code.extend(i.assemble());
+        }
+        helper.load_instructions(&machine_code, 0);
+        helper.run_until_reset_released(&mut tta)?;
+        helper.run_for_cycles(&mut tta, 200);
+
+        assert_eq!(helper.get_data_memory(100), 11);
+        assert_eq!(helper.get_data_memory(101), 22);
+        assert_eq!(helper.get_data_memory(102), 33);
+        assert_eq!(helper.get_data_memory(103), 44);
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_queue_mixed_instruction_widths() -> Result<(), Box<dyn std::error::Error>> {
+        // Mix of 1-word, 2-word, and 3-word instructions in sequence.
+        // Tests that the queue correctly handles variable-width entries.
+        let runtime = create_runtime()?;
+        let mut tta = runtime
+            .create_model_simple::<TtaTestbench>()
+            .map_err(|e| format!("Failed to create model: {:?}", e))?;
+        let mut helper = TtaTestHelper::new();
+
+        tta.rst_i = 1;
+        tta.clk_i = 0;
+        tta.instr_ready_i = 0;
+        tta.data_ready_i = 0;
+        tta.instr_data_read_i = 0;
+        tta.data_data_read_i = 0;
+
+        helper.set_data_memory(50, 0xAAAA);
+
+        let program = vec![
+            // 1-word: imm → reg
+            instr().src(Unit::UNIT_ABS_IMMEDIATE).si(0x11)
+                   .dst(Unit::UNIT_REGISTER).di(0),
+            // 2-word: abs_operand → reg (2 words: opcode + operand)
+            instr().src(Unit::UNIT_ABS_OPERAND).soperand(0x2222)
+                   .dst(Unit::UNIT_REGISTER).di(1),
+            // 1-word: reg → mem
+            instr().src(Unit::UNIT_REGISTER).si(0)
+                   .dst(Unit::UNIT_MEMORY_IMMEDIATE).di(100),
+            // 1-word: reg → mem
+            instr().src(Unit::UNIT_REGISTER).si(1)
+                   .dst(Unit::UNIT_MEMORY_IMMEDIATE).di(101),
+            // 2-word: mem_operand → reg (source operand)
+            instr().src_mem_op(50, AccessWidth::Word, 0)
+                   .dst(Unit::UNIT_REGISTER).di(2),
+            // 1-word: reg → mem
+            instr().src(Unit::UNIT_REGISTER).si(2)
+                   .dst(Unit::UNIT_MEMORY_IMMEDIATE).di(102),
+        ];
+
+        let mut machine_code = Vec::new();
+        for i in &program {
+            machine_code.extend(i.assemble());
+        }
+        helper.load_instructions(&machine_code, 0);
+        helper.run_until_reset_released(&mut tta)?;
+        helper.run_for_cycles(&mut tta, 300);
+
+        assert_eq!(helper.get_data_memory(100), 0x11, "1-word imm result");
+        assert_eq!(helper.get_data_memory(101), 0x2222, "2-word operand result");
+        assert_eq!(helper.get_data_memory(102), 0xAAAA, "mem_operand load result");
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_queue_branch_flush_clears_both_entries() -> Result<(), Box<dyn std::error::Error>> {
+        // The queue may have 2 entries filled when a branch executes.
+        // Both must be flushed. Skipped instructions write to distinct
+        // addresses so transient execution is observable.
+        let runtime = create_runtime()?;
+        let mut tta = runtime
+            .create_model_simple::<TtaTestbench>()
+            .map_err(|e| format!("Failed to create model: {:?}", e))?;
+        let mut helper = TtaTestHelper::new();
+
+        tta.rst_i = 1;
+        tta.clk_i = 0;
+        tta.instr_ready_i = 0;
+        tta.data_ready_i = 0;
+        tta.instr_data_read_i = 0;
+        tta.data_data_read_i = 0;
+
+        // addr 0-1: jump to addr 6 (2-word)
+        // addr 2:   store 0xBAD1 → mem[400] (wrong path, possibly queued)
+        // addr 3:   store 0xBAD2 → mem[401] (wrong path, possibly queued)
+        // addr 4:   store 0xBAD3 → mem[402] (wrong path)
+        // addr 5:   nop padding
+        // addr 6:   store 0xOK → mem[100]
+        let program = vec![
+            instr().src(Unit::UNIT_ABS_OPERAND).soperand(6).dst(Unit::UNIT_PC),
+            // These 1-word instructions may be fetched into both queue slots
+            instr().src(Unit::UNIT_ABS_IMMEDIATE).si(0xBA1).dst(Unit::UNIT_MEMORY_IMMEDIATE).di(400),
+            instr().src(Unit::UNIT_ABS_IMMEDIATE).si(0xBA2).dst(Unit::UNIT_MEMORY_IMMEDIATE).di(401),
+            instr().src(Unit::UNIT_ABS_IMMEDIATE).si(0xBA3).dst(Unit::UNIT_MEMORY_IMMEDIATE).di(402),
+            instr().src(Unit::UNIT_ABS_IMMEDIATE).si(0).dst(Unit::UNIT_REGISTER).di(0),
+            instr().src(Unit::UNIT_ABS_IMMEDIATE).si(0x999).dst(Unit::UNIT_MEMORY_IMMEDIATE).di(100),
+        ];
+
+        let mut machine_code = Vec::new();
+        for i in &program {
+            machine_code.extend(i.assemble());
+        }
+        helper.load_instructions(&machine_code, 0);
+        helper.run_until_reset_released(&mut tta)?;
+        helper.run_for_cycles(&mut tta, 200);
+
+        assert_eq!(helper.get_data_memory(100), 0x999, "Branch target should execute");
+        assert_eq!(helper.get_data_memory(400), 0, "Wrong-path entry 1 must not execute");
+        assert_eq!(helper.get_data_memory(401), 0, "Wrong-path entry 2 must not execute");
+        assert_eq!(helper.get_data_memory(402), 0, "Wrong-path entry 3 must not execute");
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_queue_pc_correctness() -> Result<(), Box<dyn std::error::Error>> {
+        // Verify UNIT_PC returns the correct value for each instruction
+        // as it flows through the queue. Mixed 1-word and 2-word instructions.
+        let runtime = create_runtime()?;
+        let mut tta = runtime
+            .create_model_simple::<TtaTestbench>()
+            .map_err(|e| format!("Failed to create model: {:?}", e))?;
+        let mut helper = TtaTestHelper::new();
+
+        tta.rst_i = 1;
+        tta.clk_i = 0;
+        tta.instr_ready_i = 0;
+        tta.data_ready_i = 0;
+        tta.instr_data_read_i = 0;
+        tta.data_data_read_i = 0;
+
+        // addr 0:   PC → mem[100]  (1-word, PC should be 1)
+        // addr 1-2: abs_operand(0x42) → reg[0]  (2-word, PC should be 3)
+        // addr 3:   PC → mem[101]  (1-word, PC should be 4)
+        // addr 4:   PC → mem[102]  (1-word, PC should be 5)
+        let program = vec![
+            instr().src(Unit::UNIT_PC).dst(Unit::UNIT_MEMORY_IMMEDIATE).di(100),
+            instr().src(Unit::UNIT_ABS_OPERAND).soperand(0x42).dst(Unit::UNIT_REGISTER).di(0),
+            instr().src(Unit::UNIT_PC).dst(Unit::UNIT_MEMORY_IMMEDIATE).di(101),
+            instr().src(Unit::UNIT_PC).dst(Unit::UNIT_MEMORY_IMMEDIATE).di(102),
+        ];
+
+        let mut machine_code = Vec::new();
+        for i in &program {
+            machine_code.extend(i.assemble());
+        }
+        helper.load_instructions(&machine_code, 0);
+        helper.run_until_reset_released(&mut tta)?;
+        helper.run_for_cycles(&mut tta, 200);
+
+        assert_eq!(helper.get_data_memory(100), 1, "PC at addr 0 (1-word) should be 1");
+        assert_eq!(helper.get_data_memory(101), 4, "PC at addr 3 (after 2-word at addr 1) should be 4");
+        assert_eq!(helper.get_data_memory(102), 5, "PC at addr 4 should be 5");
+
+        Ok(())
+    }
 }

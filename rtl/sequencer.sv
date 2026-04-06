@@ -7,37 +7,38 @@
 //
 // Architecture: three concerns, cleanly separated:
 //   1. Fetch FSM: reads instruction words from instr_bus into the
-//      prefetch buffer. Runs unconditionally (overlaps with execute).
-//   2. Prefetch buffer + valid flag: holds the complete fetched
-//      instruction until execute accepts it.
-//   3. Handoff: when instr_accept_i fires, promotes the buffer to
-//      the decoder-facing outputs and clears valid. This happens
+//      instruction queue. Runs whenever the queue has a free slot.
+//   2. Instruction queue: a 2-entry FIFO of complete instructions.
+//      Each entry holds {pc, op, src_operand, dst_operand}.
+//   3. Handoff: when instr_accept_i fires, dequeues the head entry
+//      and promotes it to the decoder-facing outputs. This happens
 //      in exactly one place.
 //
 // The valid/accept contract:
-//   - instr_valid_o is high whenever the prefetch buffer holds a
-//     complete instruction. It stays high until accepted.
+//   - instr_valid_o is high whenever the queue is non-empty.
 //   - instr_accept_i is a combinational signal from execute, high
 //     for exactly one cycle when execute consumes the instruction.
-//   - On accept, the sequencer promotes the buffer to outputs and
-//     clears valid, allowing the fetch FSM to start the next fetch.
+//   - On accept, the sequencer promotes the head entry to outputs
+//     and advances the read pointer.
 //
-// On a taken branch, pc_write_en_i clears prefetch_valid and restarts
-// the fetch FSM from the new PC.
+// pc_o semantics: pc_o is the PC value associated with the instruction
+// currently presented on op_o. It equals (instruction_address +
+// instruction_word_count), i.e., the address of the next sequential
+// instruction. This is what execute sees via UNIT_PC.
+//
+// On a taken branch, pc_write_en_i invalidates the entire queue and
+// restarts the fetch FSM from the new PC.
 module sequencer (
     input wire clk_i,                   // System clock
     input wire rst_i,                   // Synchronous reset (active high)
     bus_if.master instr_bus,            // Instruction fetch bus
-    output logic [31:0] pc_o,           // Next fetch address (word-addressed). Advances
-                                        // past all instruction words before handoff, so
-                                        // when execute reads it via UNIT_PC, it sees
-                                        // (instruction_address + instruction_word_count).
+    output logic [31:0] pc_o,           // PC of current instruction (see above)
     output logic [31:0] op_o,           // Fetched opcode word for the decoder
     output logic [31:0] src_operand_o,  // 32-bit source operand (when needed)
     output logic [31:0] dst_operand_o,  // 32-bit destination operand (when needed)
 
     // Valid/accept handshake with execute.
-    output wire         instr_valid_o,  // Prefetch buffer has a complete instruction
+    output wire         instr_valid_o,  // Queue has a complete instruction
     input  wire         instr_accept_i, // Execute is consuming the instruction this cycle
 
     // PC override from execute (for jumps / conditional branches).
@@ -45,7 +46,6 @@ module sequencer (
     input  logic        pc_write_en_i   // High to override PC with pc_write_i
 
 `ifdef SEQUENCER_DEBUG
-    // Simulation-only debug outputs for observing prefetch state.
     ,output wire        dbg_prefetch_valid_o,
     output wire  [2:0]  dbg_fetch_state_o,
     output wire  [31:0] dbg_prefetch_op_o
@@ -54,27 +54,47 @@ module sequencer (
 
   // --- Fetch FSM state ---
   enum {
-    SEQ_FETCH_START,            // Issue bus read for opcode at pc_o
-    SEQ_FETCH_OPCODE,           // Wait for bus ready, latch opcode
-    SEQ_FETCH_SRC_OPERAND,      // Wait for source operand word from bus
-    SEQ_FETCH_DST_OPERAND_SETUP,// Issue bus read for destination operand
-    SEQ_FETCH_DST_OPERAND,      // Wait for destination operand from bus
-    SEQ_FETCH_IDLE              // Fetch complete, waiting for handoff
+    SEQ_FETCH_START,
+    SEQ_FETCH_OPCODE,
+    SEQ_FETCH_SRC_OPERAND,
+    SEQ_FETCH_DST_OPERAND_SETUP,
+    SEQ_FETCH_DST_OPERAND,
+    SEQ_FETCH_IDLE
   } fetch_state;
 
-  // --- Prefetch buffer ---
-  logic        prefetch_valid;
-  logic [31:0] prefetch_op;
-  logic [31:0] prefetch_src_operand;
-  logic [31:0] prefetch_dst_operand;
+  // --- Instruction queue (2-entry FIFO) ---
+  localparam QUEUE_DEPTH = 2;
 
-  // Valid is a level signal: high when buffer holds a complete instruction.
-  assign instr_valid_o = prefetch_valid;
+  // Each entry: {pc, op, src_operand, dst_operand}
+  logic [31:0] q_pc          [QUEUE_DEPTH-1:0];
+  logic [31:0] q_op          [QUEUE_DEPTH-1:0];
+  logic [31:0] q_src_operand [QUEUE_DEPTH-1:0];
+  logic [31:0] q_dst_operand [QUEUE_DEPTH-1:0];
+  logic        q_valid       [QUEUE_DEPTH-1:0];
+
+  // Queue pointers (1-bit each for a 2-entry queue).
+  logic wr_ptr, rd_ptr;
+  wire  queue_full  = q_valid[0] && q_valid[1];
+  wire  queue_empty = !q_valid[0] && !q_valid[1];
+  wire  queue_has_space = !queue_full;
+
+  // The head of the queue is the entry execute will consume.
+  assign instr_valid_o = q_valid[rd_ptr];
+
+  // Staging area: the fetch FSM builds the instruction here before
+  // enqueueing it as a complete entry.
+  logic [31:0] staging_op;
+  logic [31:0] staging_src_operand;
+  logic [31:0] staging_dst_operand;
+
+  // Fetch address — separate from pc_o. Advances as the fetch FSM
+  // reads instruction words. pc_o is only updated on handoff.
+  logic [31:0] fetch_pc;
 
 `ifdef SEQUENCER_DEBUG
-  assign dbg_prefetch_valid_o = prefetch_valid;
+  assign dbg_prefetch_valid_o = instr_valid_o;
   assign dbg_fetch_state_o = fetch_state[2:0];
-  assign dbg_prefetch_op_o = prefetch_op;
+  assign dbg_prefetch_op_o = staging_op;
 `endif
 
   // --- Helpers ---
@@ -88,8 +108,8 @@ module sequencer (
     return du == UNIT_MEMORY_OPERAND || du == UNIT_ABS_OPERAND;
   endfunction
 
-  wire [31:0] pc_plus_1 = pc_o + 1;
-  wire [31:0] pc_plus_2 = pc_o + 2;
+  wire [31:0] fetch_pc_plus_1 = fetch_pc + 1;
+  wire [31:0] fetch_pc_plus_2 = fetch_pc + 2;
 
   always @(posedge clk_i) begin
     if (rst_i) begin
@@ -97,89 +117,101 @@ module sequencer (
       op_o <= 32'b0;
       src_operand_o <= 32'b0;
       dst_operand_o <= 32'b0;
-      prefetch_valid <= 1'b0;
-      prefetch_op <= 32'b0;
-      prefetch_src_operand <= 32'b0;
-      prefetch_dst_operand <= 32'b0;
+      fetch_pc <= 32'b0;
+      staging_op <= 32'b0;
+      staging_src_operand <= 32'b0;
+      staging_dst_operand <= 32'b0;
+      q_valid[0] <= 1'b0;
+      q_valid[1] <= 1'b0;
+      wr_ptr <= 1'b0;
+      rd_ptr <= 1'b0;
       fetch_state <= SEQ_FETCH_START;
       instr_bus.valid <= 1'b0;
       instr_bus.instr <= 1'b0;
       instr_bus.addr <= 32'b0;
     end else if (pc_write_en_i) begin
-      // Branch taken: discard prefetch, restart fetch from new PC.
-      pc_o <= pc_write_i;
-      prefetch_valid <= 1'b0;
+      // Branch taken: flush entire queue, restart fetch from new PC.
+      fetch_pc <= pc_write_i;
+      q_valid[0] <= 1'b0;
+      q_valid[1] <= 1'b0;
+      wr_ptr <= 1'b0;
+      rd_ptr <= 1'b0;
       instr_bus.valid <= 1'b0;
       fetch_state <= SEQ_FETCH_START;
     end else begin
 
-      // === Handoff: promote prefetch buffer to decoder-facing outputs ===
-      // This is the ONLY place outputs are updated.
-      // instr_accept_i is combinational from execute — it fires for one
-      // cycle when execute is idle and prefetch_valid is high.
-      if (instr_accept_i) begin
-        op_o <= prefetch_op;
-        src_operand_o <= prefetch_src_operand;
-        dst_operand_o <= prefetch_dst_operand;
-        prefetch_valid <= 1'b0;
-        // Kick the fetch FSM if it's waiting for the buffer to drain.
-        if (fetch_state == SEQ_FETCH_IDLE)
-          fetch_state <= SEQ_FETCH_START;
+      // === Handoff: dequeue head entry to decoder-facing outputs ===
+      if (instr_accept_i && q_valid[rd_ptr]) begin
+        op_o <= q_op[rd_ptr];
+        src_operand_o <= q_src_operand[rd_ptr];
+        dst_operand_o <= q_dst_operand[rd_ptr];
+        pc_o <= q_pc[rd_ptr];
+        q_valid[rd_ptr] <= 1'b0;
+        rd_ptr <= ~rd_ptr;
       end
 
-      // === Fetch FSM: runs unconditionally (prefetch) ===
+      // === Fetch FSM: runs when queue has space ===
       case (fetch_state)
         SEQ_FETCH_START: begin
-          if (!prefetch_valid || instr_accept_i) begin
-            // Buffer is empty (or being drained this cycle). Start fetch.
+          if (queue_has_space || instr_accept_i) begin
             instr_bus.valid <= 1'b1;
             instr_bus.instr <= 1'b1;
-            instr_bus.addr <= pc_o;
+            instr_bus.addr <= fetch_pc;
             fetch_state <= SEQ_FETCH_OPCODE;
           end
         end
 
         SEQ_FETCH_OPCODE: begin
           if (instr_bus.ready) begin
-            prefetch_op <= instr_bus.read_data;
+            staging_op <= instr_bus.read_data;
             if (needs_src_op(instr_bus.read_data) || needs_dst_op(instr_bus.read_data)) begin
               instr_bus.valid <= 1'b1;
               instr_bus.instr <= 1'b0;
-              instr_bus.addr  <= pc_plus_1;
+              instr_bus.addr  <= fetch_pc_plus_1;
               if (needs_src_op(instr_bus.read_data))
                 fetch_state <= SEQ_FETCH_SRC_OPERAND;
               else
                 fetch_state <= SEQ_FETCH_DST_OPERAND;
             end else begin
-              // 1-word instruction complete.
-              pc_o <= pc_plus_1;
+              // 1-word instruction complete. Enqueue it.
+              q_op[wr_ptr] <= instr_bus.read_data;
+              q_src_operand[wr_ptr] <= 32'b0;
+              q_dst_operand[wr_ptr] <= 32'b0;
+              q_pc[wr_ptr] <= fetch_pc_plus_1;
+              q_valid[wr_ptr] <= 1'b1;
+              wr_ptr <= ~wr_ptr;
+              fetch_pc <= fetch_pc_plus_1;
               instr_bus.valid <= 1'b0;
-              prefetch_valid <= 1'b1;
-              fetch_state <= SEQ_FETCH_IDLE;
+              fetch_state <= SEQ_FETCH_START;
             end
           end
         end
 
         SEQ_FETCH_SRC_OPERAND: begin
           if (instr_bus.ready) begin
-            prefetch_src_operand <= instr_bus.read_data;
-            if (needs_dst_op(prefetch_op)) begin
+            staging_src_operand <= instr_bus.read_data;
+            if (needs_dst_op(staging_op)) begin
               // 3-word instruction: still need dst operand.
               instr_bus.valid <= 1'b0;
-              pc_o <= pc_plus_1;
+              fetch_pc <= fetch_pc_plus_1;
               fetch_state <= SEQ_FETCH_DST_OPERAND_SETUP;
             end else begin
-              // 2-word instruction complete.
-              pc_o <= pc_plus_2;
+              // 2-word instruction complete. Enqueue it.
+              q_op[wr_ptr] <= staging_op;
+              q_src_operand[wr_ptr] <= instr_bus.read_data;
+              q_dst_operand[wr_ptr] <= 32'b0;
+              q_pc[wr_ptr] <= fetch_pc_plus_2;
+              q_valid[wr_ptr] <= 1'b1;
+              wr_ptr <= ~wr_ptr;
+              fetch_pc <= fetch_pc_plus_2;
               instr_bus.valid <= 1'b0;
-              prefetch_valid <= 1'b1;
-              fetch_state <= SEQ_FETCH_IDLE;
+              fetch_state <= SEQ_FETCH_START;
             end
           end
         end
 
         SEQ_FETCH_DST_OPERAND_SETUP: begin
-          instr_bus.addr  <= pc_plus_1;
+          instr_bus.addr  <= fetch_pc_plus_1;
           instr_bus.valid <= 1'b1;
           instr_bus.instr <= 1'b0;
           fetch_state <= SEQ_FETCH_DST_OPERAND;
@@ -187,19 +219,22 @@ module sequencer (
 
         SEQ_FETCH_DST_OPERAND: begin
           if (instr_bus.ready) begin
-            prefetch_dst_operand <= instr_bus.read_data;
-            // 3-word instruction complete.
-            pc_o <= pc_plus_2;
+            // 3-word instruction complete. Enqueue it.
+            q_op[wr_ptr] <= staging_op;
+            q_src_operand[wr_ptr] <= staging_src_operand;
+            q_dst_operand[wr_ptr] <= instr_bus.read_data;
+            q_pc[wr_ptr] <= fetch_pc_plus_2;
+            q_valid[wr_ptr] <= 1'b1;
+            wr_ptr <= ~wr_ptr;
+            fetch_pc <= fetch_pc_plus_2;
             instr_bus.valid <= 1'b0;
-            prefetch_valid <= 1'b1;
-            fetch_state <= SEQ_FETCH_IDLE;
+            fetch_state <= SEQ_FETCH_START;
           end
         end
 
         SEQ_FETCH_IDLE: begin
-          // Waiting for handoff to clear prefetch_valid.
-          // The handoff block above will set fetch_state <= SEQ_FETCH_START
-          // when it consumes the buffer.
+          // Not used with queue — fetch FSM goes directly to START
+          // when there's space. Kept for enum completeness.
         end
       endcase
     end
