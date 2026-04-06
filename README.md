@@ -67,14 +67,16 @@ destination require an extended operand.
 | `STACK_PUSH_POP` | Pop from stack N (imm[2:0]) | Push to stack N |
 | `STACK_INDEX` | Peek at offset in stack N | Poke at offset in stack N |
 
-The assembler in `src/assembler.rs` is the authoritative reference for
-encoding details.
+All 16 unit codes are assigned. The assembler in `src/assembler.rs`
+is the authoritative reference for encoding details.
 
 ### ALU operations
 
 Each ALU lane holds a left operand (A), right operand (B), and an
 operator. You configure a lane by moving values into its inputs and
-operator, then read the result back. The 16 operations are:
+operator, then read the result back. ALU results are combinational
+— available immediately with no extra clock cycle. The 16
+operations are:
 
 `NOP`, `ADD`, `SUB`, `MUL`, `DIV`, `MOD`, `EQL`, `SL` (shift left),
 `SR` (shift right), `SRA` (arithmetic shift right), `NOT` (unary,
@@ -102,9 +104,8 @@ alu[0].result → cond    ; latch result into condition register
 LABEL → pc_cond         ; jump if condition is set
 ```
 
-The condition register is designed with pipelining in mind: the
-condition is resolved in a prior instruction, so a future pipeline
-can forward the single-bit result with minimal stall penalty.
+The condition register is resolved in a prior instruction, so the
+pipeline can forward the single-bit result with minimal stall.
 
 ### Tagged registers
 
@@ -171,6 +172,50 @@ logic in the existing data path.
 `MEMORY_IMMEDIATE` always performs full-word access (the full
 12-bit immediate is used as a word address).
 
+### Microarchitecture
+
+The core has three stages: **sequencer** (fetch), **decoder**
+(combinational), and **execute**.
+
+**Instruction queue.** The sequencer fetches instructions into a
+2-entry FIFO that runs ahead of execute, hiding bus latency for
+sequential code. Each queue entry captures the instruction's PC
+so that `UNIT_PC` reads return the correct value regardless of
+how far ahead the fetch has progressed.
+
+**Fetch stall policy.** The sequencer will not fetch past a
+control-flow instruction (`PC` or `PC_COND` as destination). It
+stalls until execute accepts the branch, at which point either a
+flush occurs (taken) or sequential fetch resumes (not taken). This
+means the queue never contains wrong-path instructions —
+correctness is structural, not flush-dependent.
+
+**Fused execute.** When both the source and destination resolve in
+a single cycle (register, ALU, immediate, condition, PC), the
+execute stage completes both phases in one cycle with no state
+transition. Multi-cycle sources (memory loads, stack pops) go
+through separate wait states.
+
+**Valid/accept handshake.** The sequencer and execute communicate
+via a level-based valid/accept protocol:
+  * `instr_valid` — high when the queue has a complete instruction
+  * `instr_accept` — combinational from execute, fires for one
+    cycle when execute is idle
+
+On accept, the sequencer dequeues the head entry and promotes it
+to the decoder-facing outputs. Execute latches `exec_active` and
+begins processing on the next cycle.
+
+**PC semantics.** `UNIT_PC` as a source returns
+`instruction_address + instruction_word_count` — the address of
+the next sequential instruction. This is the PC value captured in
+the queue entry, not the fetch address (which may have advanced
+further).
+
+**Synthesizable.** All sequential logic uses non-blocking
+assignments (`<=`). The design is correct for FPGA synthesis, not
+just Verilator simulation.
+
 ### What can't it do yet?
 
   * I'd like to add support for interrupts.
@@ -178,10 +223,10 @@ logic in the existing data path.
 
 ### Building, running
 
-The project now uses Rust with the Marlin library for simulation:
+The project uses Rust with the Marlin library for simulation:
 
-  * `cargo test` runs the full test suite including integration tests
-    and property-based tests
+  * `cargo test` runs the full test suite (97 tests: integration,
+    property-based, and unit tests)
   * `cargo run -- --cycles 200` runs the Marlin-backed `simtop`
     wrapper with boot ROM and external SRAM modeling
   * `cargo run -- --trace-file simtop.vcd` writes a VCD trace for
